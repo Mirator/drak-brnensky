@@ -1,5 +1,7 @@
 # DRAK BRNĚNSKÝ
 
+**▶ Play it: https://mirator.github.io/drak-brnensky/**
+
 A third-person action game set in central Brno, built with [three.js](https://threejs.org/).
 Rifts have torn open over the city and the Brno Dragon's brood is pouring out of them.
 Seal the rifts, hold the squares, then hunt the dragon itself on náměstí Svobody.
@@ -24,6 +26,10 @@ so click the canvas again if you tab away). Production build:
 ```bash
 npm run build
 ```
+
+Pushes to `main` build and publish to GitHub Pages via
+`.github/workflows/deploy.yml`. The Vite `base` is `'./'` so the bundle works
+from the `/drak-brnensky/` sub-path.
 
 ## Controls
 
