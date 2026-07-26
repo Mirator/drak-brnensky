@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DRAK BRNĚNSKÝ — Brno Action</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- ============ HUD ============ -->
+  <div id="hud" class="hidden">
+    <div class="hud-top-left">
+      <div class="bar-group">
+        <div class="bar-label">ZDRAVÍ</div>
+        <div class="bar"><div class="bar-fill hp" id="hp-fill"></div></div>
+      </div>
+      <div class="bar-group">
+        <div class="bar-label">VÝDRŽ</div>
+        <div class="bar thin"><div class="bar-fill st" id="st-fill"></div></div>
+      </div>
+    </div>
+
+    <div class="hud-top-right">
+      <div class="stat"><span class="k">SKÓRE</span><span class="v" id="score">0</span></div>
+      <div class="stat"><span class="k">VLNA</span><span class="v" id="wave">1</span></div>
+      <div class="stat"><span class="k">DRACI</span><span class="v" id="enemies">0</span></div>
+    </div>
+
+    <div class="hud-objective" id="objective">
+      <div class="obj-title">ÚKOL</div>
+      <div class="obj-text" id="objective-text">Najdi ohnisko</div>
+      <div class="obj-dist" id="objective-dist">—</div>
+    </div>
+
+    <div id="compass"><div id="compass-strip"></div><div id="compass-needle"></div></div>
+
+    <div class="hud-bottom-right">
+      <div id="ammo"><span id="ammo-cur">12</span><span class="ammo-sep">/</span><span id="ammo-max">12</span></div>
+      <div id="weapon-name">PLAZMOVÝ VRHAČ</div>
+      <div id="reload-hint" class="hidden">R — PŘEBÍT</div>
+    </div>
+
+    <div id="crosshair"><span></span><span></span><span></span><span></span><i></i></div>
+
+    <div id="hitmarker"></div>
+    <div id="damage-vignette"></div>
+    <div id="toast-stack"></div>
+    <div id="minimap"><canvas id="minimap-canvas" width="220" height="220"></canvas></div>
+  </div>
+
+  <!-- ============ MENU ============ -->
+  <div id="menu">
+    <div class="menu-bg"></div>
+    <div class="menu-card">
+      <div class="menu-kicker">THREE.JS · TŘETÍ OSOBA · AKCE</div>
+      <h1 class="menu-title">DRAK<span>BRNĚNSKÝ</span></h1>
+      <p class="menu-sub">
+        Nad Brnem se otevřely trhliny. Z podzemí Petrova se sype dračí potomstvo.
+        Braň Zelný trh, náměstí Svobody i Špilberk — a ulov samotného draka.
+      </p>
+
+      <div class="controls-grid">
+        <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>pohyb</span></div>
+        <div><kbd>MYŠ</kbd><span>rozhled</span></div>
+        <div><kbd>LMB</kbd><span>střelba</span></div>
+        <div><kbd>SHIFT</kbd><span>sprint</span></div>
+        <div><kbd>MEZERNÍK</kbd><span>skok</span></div>
+        <div><kbd>CTRL</kbd><span>úhyb / dash</span></div>
+        <div><kbd>F</kbd><span>úder na blízko</span></div>
+        <div><kbd>R</kbd><span>přebít</span></div>
+        <div><kbd>E</kbd><span>použít / lékárna</span></div>
+        <div><kbd>ESC</kbd><span>pauza</span></div>
+      </div>
+
+      <button id="btn-play">HRÁT</button>
+      <div class="menu-foot">Klikni pro uzamčení kurzoru · doporučen Chrome / Edge</div>
+    </div>
+  </div>
+
+  <!-- ============ PAUSE ============ -->
+  <div id="pause" class="overlay hidden">
+    <div class="overlay-card">
+      <h2>PAUZA</h2>
+      <div class="pause-stats" id="pause-stats"></div>
+      <button id="btn-resume">POKRAČOVAT</button>
+      <button id="btn-restart" class="ghost">RESTART</button>
+    </div>
+  </div>
+
+  <!-- ============ GAME OVER ============ -->
+  <div id="gameover" class="overlay hidden">
+    <div class="overlay-card">
+      <h2 id="go-title">PADL JSI</h2>
+      <div class="pause-stats" id="go-stats"></div>
+      <button id="btn-again">ZNOVU DO BOJE</button>
+    </div>
+  </div>
+
+  <div id="loading">
+    <div class="load-inner">
+      <div class="load-title">STAVÍME BRNO…</div>
+      <div class="load-bar"><div id="load-fill"></div></div>
+      <div class="load-step" id="load-step">inicializace</div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

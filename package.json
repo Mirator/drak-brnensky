@@ -1,0 +1,21 @@
+{
+  "name": "drak-brnensky",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "Third-person action game set in central Brno, built with three.js",
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "vite": "^8.1.5"
+  },
+  "type": "module"
+}
