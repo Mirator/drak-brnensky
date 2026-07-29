@@ -405,10 +405,9 @@ function wireGameplay() {
   };
 
   enemies.onPlayerHit = (e, dmg, dir, continuous = false) => {
-    if (player.damage(dmg, dir)) {
-      audio.hurt();
-      chase.addShake(continuous ? 0.12 : 0.55);
-      hud.el.vignette.style.opacity = '0.75';
+    if (player.damage(dmg, dir, continuous)) {
+      if (!continuous) audio.hurt();
+      chase.addShake(continuous ? 0.015 : 0.55);
       if (!player.alive) onDeath();
     }
   };

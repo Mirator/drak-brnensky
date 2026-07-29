@@ -214,12 +214,14 @@ export class Player {
     return _v2.set(this.pos.x, this.pos.y + 1.0, this.pos.z);
   }
 
-  damage(amount, fromDir) {
-    if (!this.alive || this.invuln > 0) return false;
+  damage(amount, fromDir, continuous = false) {
+    if (!this.alive || this.dashTime > 0 || (!continuous && this.invuln > 0)) return false;
     this.health -= amount;
     this.hurtFlash = 1;
-    this.invuln = 0.25;
-    if (fromDir) this.vel.addScaledVector(fromDir, 2.2);
+    if (!continuous) {
+      this.invuln = 0.25;
+      if (fromDir) this.vel.addScaledVector(fromDir, 2.2);
+    }
     if (this.health <= 0) {
       this.health = 0;
       this.alive = false;
@@ -337,14 +339,31 @@ export class Player {
 
     this.aimBlend += ((input.fire || input.aim ? 1 : 0) - this.aimBlend) * Math.min(1, dt * 14);
 
+    /* ---- facing ---- */
+    const aiming = this.aimBlend > 0.4;
+    let targetFacing = this.facing;
+    if (aiming) targetFacing = Math.PI - camYaw;
+    else if (moving) targetFacing = Math.atan2(-wx, -wz);
+    let diff = ((targetFacing - this.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    this.facing += diff * Math.min(1, dt * (aiming ? 18 : 11));
+    this.object.position.set(this.pos.x, this.pos.y, this.pos.z);
+    this.object.rotation.y = this.facing;
+
     if (input.fire && this.fireCd <= 0 && this.reloading <= 0) {
       if (this.ammo > 0) {
         this.ammo--;
         this.fireCd = WEAPON.fireRate;
         this.recoil = 1;
+        this.fig.muzzle.updateWorldMatrix(true, false);
         const origin = _v3.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
         // Aim at whatever the crosshair is over so the shot and the reticle agree.
-        const dir = _v4.copy(input.aimPoint).sub(origin).normalize();
+        const cp = Math.cos(camPitch);
+        const aimForward = _v2.set(-Math.sin(camYaw) * cp, Math.sin(camPitch), Math.cos(camYaw) * cp);
+        const dir = _v4.copy(input.aimPoint).sub(origin);
+        // A close wall can put the camera's hit point behind the muzzle. In that
+        // case fire along the camera ray instead of back over the player's shoulder.
+        if (dir.dot(aimForward) < 0.75) dir.copy(aimForward);
+        else dir.normalize();
         dir.x += (Math.random() - 0.5) * WEAPON.spread;
         dir.y += (Math.random() - 0.5) * WEAPON.spread;
         dir.z += (Math.random() - 0.5) * WEAPON.spread;
@@ -368,25 +387,15 @@ export class Player {
       hooks.onMelee && hooks.onMelee();
     }
 
-    this.muzzleLight.intensity *= Math.exp(-dt * 16);
-    this.muzzleLight.position.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
-
-    /* ---- facing ---- */
-    const aiming = this.aimBlend > 0.4;
-    let targetFacing = this.facing;
-    if (aiming) targetFacing = Math.PI - camYaw;
-    else if (moving) targetFacing = Math.atan2(-wx, -wz);
-    let diff = ((targetFacing - this.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    this.facing += diff * Math.min(1, dt * (aiming ? 18 : 11));
-
     /* ---- animation ---- */
     const hs = Math.hypot(this.vel.x, this.vel.z);
     this.speedRatio = hs / SPRINT;
     this.animPhase += dt * (2.4 + hs * 1.55);
     this.animate(dt, hs, camPitch, aiming, moving);
 
-    this.object.position.set(this.pos.x, this.pos.y, this.pos.z);
-    this.object.rotation.y = this.facing;
+    this.fig.muzzle.updateWorldMatrix(true, false);
+    this.muzzleLight.intensity *= Math.exp(-dt * 16);
+    this.muzzleLight.position.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
 
     // footstep events
     this._stepAcc = (this._stepAcc || 0) + hs * dt;
