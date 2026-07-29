@@ -9,6 +9,7 @@ import { EnemyManager, ENEMY_TYPES } from './enemies.js';
 import { Hud } from './hud.js';
 import { Audio } from './audio.js';
 import { Rng } from './rng.js';
+import { bindSettings } from './settings.js';
 
 /* ==================================================================
    DRAK BRNĚNSKÝ — third-person action, central Brno
@@ -18,7 +19,7 @@ let lastTime = performance.now();
 const rng = new Rng(90210);
 
 const state = {
-  mode: 'loading', // loading | menu | playing | paused | dead
+  mode: 'loading', // loading | menu | playing | paused | dead | error
   score: 0,
   wave: 0,
   waveState: 'idle', // idle | active | cleared
@@ -33,17 +34,7 @@ const state = {
 
 /* ---------------- renderer & scene ---------------- */
 const canvas = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({
-  canvas,
-  antialias: true,
-  powerPreference: 'high-performance',
-});
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.08;
+let renderer = null;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x2b2c38, 0.0021);
@@ -128,6 +119,7 @@ scene.add(fillLight);
 const collision = new CollisionWorld();
 const input = new Input(canvas);
 const audio = new Audio();
+bindSettings(document, input, audio);
 let world = null;
 let vfx = null;
 let player = null;
@@ -357,6 +349,42 @@ function updateWaves(dt) {
 const loadEl = document.getElementById('loading');
 const loadFill = document.getElementById('load-fill');
 const loadStep = document.getElementById('load-step');
+const loadError = document.getElementById('load-error');
+
+function createRenderer() {
+  const probe = document.createElement('canvas');
+  const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+  if (!gl) throw new Error('WebGL is unavailable');
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+
+  const instance = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    powerPreference: 'high-performance',
+  });
+  instance.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+  instance.setSize(innerWidth, innerHeight);
+  instance.shadowMap.enabled = true;
+  instance.shadowMap.type = THREE.PCFSoftShadowMap;
+  instance.toneMapping = THREE.ACESFilmicToneMapping;
+  instance.toneMappingExposure = 1.08;
+  return instance;
+}
+
+function showBootError(error) {
+  console.error('Game initialization failed', error);
+  state.mode = 'error';
+  loadEl.classList.add('error');
+  loadEl.classList.remove('done');
+  loadError.classList.remove('hidden');
+  document.getElementById('btn-reload').onclick = () => location.reload();
+}
+
+addEventListener('unhandledrejection', (event) => {
+  if (state.mode !== 'loading') return;
+  event.preventDefault();
+  showBootError(event.reason);
+});
 
 // A timer-based yield (not rAF) so loading also completes in a background tab.
 const yieldFrame = () => new Promise((r) => setTimeout(r, 16));
@@ -368,6 +396,8 @@ async function step(pct, label) {
 }
 
 async function boot() {
+  try {
+    renderer = createRenderer();
   await step(8, 'kolize a fyzika');
   vfx = new VFX(scene);
 
@@ -394,6 +424,9 @@ async function boot() {
   state.mode = 'menu';
   lastTime = performance.now();
   renderer.setAnimationLoop(tick);
+  } catch (error) {
+    showBootError(error);
+  }
 }
 
 /* ==================================================================
@@ -618,6 +651,7 @@ addEventListener('keydown', (e) => {
 });
 
 function resizeRenderer() {
+  if (!renderer) return;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
