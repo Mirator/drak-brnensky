@@ -31,6 +31,7 @@ export class VFX {
     this.pBase = new Float32Array(MAX_PARTICLES);
     this.pCount = 0;
     this.pFree = [];
+    this._recycle = -1;
 
     const pMat = new THREE.ShaderMaterial({
       uniforms: { uTex: { value: this.glowTex } },
@@ -88,7 +89,7 @@ export class VFX {
       this.lights.push({ light: l, life: 0, max: 1, power: 0 });
     }
     this.riftLights = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 8; i++) {
       const l = new THREE.PointLight(0xff5522, 0, 30, 2);
       scene.add(l);
       this.riftLights.push({ light: l, busy: false });
@@ -110,11 +111,8 @@ export class VFX {
       if (this.pCount < MAX_PARTICLES) {
         i = this.pCount++;
       } else {
-        // Every slot is live: replace the particle closest to expiry.
-        i = 0;
-        for (let j = 1; j < MAX_PARTICLES; j++) {
-          if (this.pLife[j] < this.pLife[i]) i = j;
-        }
+        // Every slot is live: replace slots fairly without scanning the pool.
+        i = this._recycle = (this._recycle + 1) % MAX_PARTICLES;
       }
     }
     const i3 = i * 3;
@@ -253,6 +251,7 @@ export class VFX {
     g.add(beam);
     const slot = this.riftLights.find((l) => !l.busy) ?? null;
     const light = slot?.light ?? null;
+    const lightlessBoost = light ? 1 : 1.65;
     if (slot) {
       slot.busy = true;
       light.position.set(pos.x, pos.y + 1.6, pos.z);
@@ -272,7 +271,7 @@ export class VFX {
         ring.scale.setScalar(pulse);
         ring2.scale.setScalar(2 - pulse);
         if (light) light.intensity = (11 + Math.sin(rift.t * 5.5) * 4) * scale;
-        beam.material.opacity = 0.08 + Math.abs(Math.sin(rift.t * 1.3)) * 0.07;
+        beam.material.opacity = (0.08 + Math.abs(Math.sin(rift.t * 1.3)) * 0.07) * lightlessBoost;
         if (Math.random() < dt * 26) {
           this.emit(
             g.position.x + (Math.random() - 0.5) * 4 * scale,
