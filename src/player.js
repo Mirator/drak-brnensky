@@ -164,6 +164,7 @@ function buildFigure() {
 export class Player {
   constructor(scene, collision, opts = {}) {
     this.collision = collision;
+    this.rng = opts.rng;
     this.fig = buildFigure();
     this.object = this.fig.root;
     scene.add(this.object);
@@ -368,9 +369,9 @@ export class Player {
         // A close wall (or a camera ray starting inside geometry) can put the
         // hit point behind the muzzle. Never fire back over the player's shoulder.
         if (aimDistance <= 1e-6 || dir.dot(aimForward) <= 0) dir.copy(aimForward);
-        dir.x += (Math.random() - 0.5) * WEAPON.spread;
-        dir.y += (Math.random() - 0.5) * WEAPON.spread;
-        dir.z += (Math.random() - 0.5) * WEAPON.spread;
+        dir.x += this.rng.float(-0.5, 0.5) * WEAPON.spread;
+        dir.y += this.rng.float(-0.5, 0.5) * WEAPON.spread;
+        dir.z += this.rng.float(-0.5, 0.5) * WEAPON.spread;
         dir.normalize();
         hooks.onShoot && hooks.onShoot(origin, dir);
         this.muzzleLight.intensity = 26;

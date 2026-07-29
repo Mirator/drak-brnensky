@@ -14,7 +14,11 @@ export function mulberry32(seed) {
 
 export class Rng {
   constructor(seed = 1337) {
+    this.reset(seed);
+  }
+  reset(seed = 1337) {
     this.next = mulberry32(seed);
+    return this;
   }
   float(min = 0, max = 1) {
     return min + this.next() * (max - min);

@@ -99,76 +99,123 @@ const TRAM_ROUTES = [
    Painter — draws the city plan into (a) a big pretty ground texture
    and (b) a small flag map we read back as a walkability/build grid.
    ================================================================== */
+export class FlagGrid {
+  constructor() {
+    this.data = new Uint8Array(GN * GN);
+  }
+
+  fill(flag) {
+    this.data.fill(flag);
+  }
+
+  paintBounds(minX, minZ, maxX, maxZ, flag, contains) {
+    const x0 = Math.max(0, Math.floor((minX + HALF) / GRID_RES));
+    const z0 = Math.max(0, Math.floor((minZ + HALF) / GRID_RES));
+    const x1 = Math.min(GN - 1, Math.floor((maxX + HALF) / GRID_RES));
+    const z1 = Math.min(GN - 1, Math.floor((maxZ + HALF) / GRID_RES));
+    for (let z = z0; z <= z1; z++) {
+      const wz = z * GRID_RES - HALF + GRID_RES / 2;
+      for (let x = x0; x <= x1; x++) {
+        const wx = x * GRID_RES - HALF + GRID_RES / 2;
+        if (contains(wx, wz)) this.data[z * GN + x] = flag;
+      }
+    }
+  }
+
+  rect(cx, cz, w, d, flag) {
+    const hw = w / 2;
+    const hd = d / 2;
+    this.paintBounds(cx - hw, cz - hd, cx + hw, cz + hd, flag,
+      (x, z) => Math.abs(x - cx) <= hw && Math.abs(z - cz) <= hd);
+  }
+
+  line(points, width, flag) {
+    const radius = width / 2;
+    const radiusSq = radius * radius;
+    for (let i = 1; i < points.length; i++) {
+      const [ax, az] = points[i - 1];
+      const [bx, bz] = points[i];
+      const dx = bx - ax;
+      const dz = bz - az;
+      const lengthSq = dx * dx + dz * dz;
+      this.paintBounds(
+        Math.min(ax, bx) - radius, Math.min(az, bz) - radius,
+        Math.max(ax, bx) + radius, Math.max(az, bz) + radius,
+        flag,
+        (x, z) => {
+          const t = lengthSq === 0 ? 0 : Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / lengthSq));
+          const px = ax + t * dx;
+          const pz = az + t * dz;
+          return (x - px) ** 2 + (z - pz) ** 2 <= radiusSq;
+        },
+      );
+    }
+  }
+
+  circle(x, z, radius, flag) {
+    const radiusSq = radius * radius;
+    this.paintBounds(x - radius, z - radius, x + radius, z + radius, flag,
+      (px, pz) => (px - x) ** 2 + (pz - z) ** 2 <= radiusSq);
+  }
+
+  copy() {
+    return this.data.slice();
+  }
+}
+
 class Painter {
   constructor() {
     this.pretty = document.createElement('canvas');
     this.pretty.width = this.pretty.height = TEX_SIZE;
     this.pc = this.pretty.getContext('2d');
-    this.flagC = document.createElement('canvas');
-    this.flagC.width = this.flagC.height = GN;
-    this.fc = this.flagC.getContext('2d');
-    this.fc.imageSmoothingEnabled = false;
+    this.flags = new FlagGrid();
     this.sP = TEX_SIZE / MAP_SIZE;
-    this.sF = GN / MAP_SIZE;
   }
   // world -> canvas
   px(x) { return (x + HALF) * this.sP; }
-  fx(x) { return (x + HALF) * this.sF; }
 
   fill(colour, flag) {
     this.pc.fillStyle = colour;
     this.pc.fillRect(0, 0, TEX_SIZE, TEX_SIZE);
-    this.fc.fillStyle = `rgb(${flag},0,0)`;
-    this.fc.fillRect(0, 0, GN, GN);
+    this.flags.fill(flag);
   }
 
   rect(cx, cz, w, d, colour, flag) {
     this.pc.fillStyle = colour;
     this.pc.fillRect(this.px(cx - w / 2), this.px(cz - d / 2), w * this.sP, d * this.sP);
-    if (flag !== undefined) {
-      this.fc.fillStyle = `rgb(${flag},0,0)`;
-      this.fc.fillRect(this.fx(cx - w / 2), this.fx(cz - d / 2), w * this.sF, d * this.sF);
-    }
+    if (flag !== undefined) this.flags.rect(cx, cz, w, d, flag);
   }
 
   line(pts, width, colour, flag, dash = null, cap = 'round') {
-    for (const [ctx, s] of [[this.pc, this.sP], [this.fc, this.sF]]) {
-      const isFlag = ctx === this.fc;
-      if (isFlag && flag === undefined) continue;
-      ctx.save();
-      ctx.strokeStyle = isFlag ? `rgb(${flag},0,0)` : colour;
-      ctx.lineWidth = width * s;
-      ctx.lineJoin = 'round';
-      ctx.lineCap = isFlag ? 'round' : cap;
-      if (dash && !isFlag) ctx.setLineDash(dash.map((v) => v * s));
-      ctx.beginPath();
-      const p0 = pts[0];
-      ctx.moveTo((p0[0] + HALF) * s, (p0[1] + HALF) * s);
-      for (let i = 1; i < pts.length; i++) {
-        const p = pts[i];
-        ctx.lineTo((p[0] + HALF) * s, (p[1] + HALF) * s);
-      }
-      ctx.stroke();
-      ctx.restore();
+    const ctx = this.pc;
+    ctx.save();
+    ctx.strokeStyle = colour;
+    ctx.lineWidth = width * this.sP;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = cap;
+    if (dash) ctx.setLineDash(dash.map((v) => v * this.sP));
+    ctx.beginPath();
+    const p0 = pts[0];
+    ctx.moveTo(this.px(p0[0]), this.px(p0[1]));
+    for (let i = 1; i < pts.length; i++) {
+      const p = pts[i];
+      ctx.lineTo(this.px(p[0]), this.px(p[1]));
     }
+    ctx.stroke();
+    ctx.restore();
+    if (flag !== undefined) this.flags.line(pts, width, flag);
   }
 
   circle(x, z, r, colour, flag) {
-    for (const [ctx, s] of [[this.pc, this.sP], [this.fc, this.sF]]) {
-      const isFlag = ctx === this.fc;
-      if (isFlag && flag === undefined) continue;
-      ctx.fillStyle = isFlag ? `rgb(${flag},0,0)` : colour;
-      ctx.beginPath();
-      ctx.arc((x + HALF) * s, (z + HALF) * s, r * s, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    this.pc.fillStyle = colour;
+    this.pc.beginPath();
+    this.pc.arc(this.px(x), this.px(z), r * this.sP, 0, Math.PI * 2);
+    this.pc.fill();
+    if (flag !== undefined) this.flags.circle(x, z, r, flag);
   }
 
   readFlags() {
-    const data = this.fc.getImageData(0, 0, GN, GN).data;
-    const flags = new Uint8Array(GN * GN);
-    for (let i = 0, j = 0; i < data.length; i += 4, j++) flags[j] = data[i];
-    return flags;
+    return this.flags.copy();
   }
 }
 
@@ -185,10 +232,10 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
 
   // organic base grain over the whole city
   for (let i = 0; i < 26000; i++) {
-    pc.globalAlpha = 0.05 + Math.random() * 0.09;
-    pc.fillStyle = Math.random() < 0.5 ? '#2b2a26' : '#4b4941';
-    const s = 6 + Math.random() * 34;
-    pc.fillRect(Math.random() * TEX_SIZE, Math.random() * TEX_SIZE, s, s);
+    pc.globalAlpha = rng.float(0.05, 0.14);
+    pc.fillStyle = rng.chance(0.5) ? '#2b2a26' : '#4b4941';
+    const s = rng.float(6, 40);
+    pc.fillRect(rng.float(0, TEX_SIZE), rng.float(0, TEX_SIZE), s, s);
   }
   pc.globalAlpha = 1;
 
@@ -199,13 +246,13 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
       painter.rect(cx, cz, w, d, '#3c5a33', FLAG.PARK);
       // meadow mottling + gravel paths
       for (let i = 0; i < 900; i++) {
-        pc.globalAlpha = 0.1 + Math.random() * 0.16;
-        pc.fillStyle = Math.random() < 0.5 ? '#2f4a29' : '#4d6d3c';
+        pc.globalAlpha = rng.float(0.1, 0.26);
+        pc.fillStyle = rng.chance(0.5) ? '#2f4a29' : '#4d6d3c';
         pc.fillRect(
-          painter.px(cx - w / 2 + Math.random() * w),
-          painter.px(cz - d / 2 + Math.random() * d),
-          8 + Math.random() * 26,
-          8 + Math.random() * 26,
+          painter.px(cx - w / 2 + rng.float(0, w)),
+          painter.px(cz - d / 2 + rng.float(0, d)),
+          rng.float(8, 34),
+          rng.float(8, 34),
         );
       }
       pc.globalAlpha = 1;
@@ -267,12 +314,12 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
 
   /* ---------- 2. reserve landmark footprints ---------- */
   const reserve = [
-    [-108, 176, 74, 40], // Petrov cathedral
-    [-268, 44, 92, 92], // Špilberk hill
+    [-108, 176, 110, 110], // Petrov cathedral and terraced mound
+    [-268, 44, 158, 158], // Špilberk hill
     [-18, 44, 26, 20], // Old town hall
     [112, -172, 62, 40], // Janáček theatre
     [104, -66, 40, 26], // Mahen theatre
-    [22, 286, 140, 34], // station hall
+    [22, 319, 140, 86], // station hall, platforms, canopies and rails
     [0, -52, 16, 16], // astronomical clock area
   ];
   for (const [x, z, w, d] of reserve) painter.rect(x, z, w, d, 'rgba(0,0,0,0)', FLAG.RESERVED);
