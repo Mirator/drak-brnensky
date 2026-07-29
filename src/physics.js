@@ -48,6 +48,29 @@ export class CollisionWorld {
     return box;
   }
 
+  /** Remove a previously-added box from both the master list and spatial grid. */
+  remove(box) {
+    const index = this.boxes.indexOf(box);
+    if (index < 0) return false;
+    this.boxes.splice(index, 1);
+
+    const cx0 = Math.floor(box.x0 / CELL);
+    const cx1 = Math.floor(box.x1 / CELL);
+    const cz0 = Math.floor(box.z0 / CELL);
+    const cz1 = Math.floor(box.z1 / CELL);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cz = cz0; cz <= cz1; cz++) {
+        const key = this.key(cx, cz);
+        const list = this.grid.get(key);
+        if (!list) continue;
+        const cellIndex = list.indexOf(box);
+        if (cellIndex >= 0) list.splice(cellIndex, 1);
+        if (list.length === 0) this.grid.delete(key);
+      }
+    }
+    return true;
+  }
+
   /** All boxes potentially overlapping the given world-space rect. */
   query(x0, z0, x1, z1, out = []) {
     out.length = 0;
