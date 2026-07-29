@@ -8,6 +8,8 @@ import * as THREE from 'three';
 const WALK = 5.4;
 const SPRINT = 9.8;
 const ACCEL = 46;
+// Preserve the old 60 Hz acceleration blend while making it frame-rate invariant.
+const ACCEL_BLEND_RATE = -60 * Math.log(1 - (ACCEL * 0.35) / 60);
 const FRICTION = 12;
 const GRAVITY = 24;
 const JUMP_V = 8.6;
@@ -214,12 +216,14 @@ export class Player {
     return _v2.set(this.pos.x, this.pos.y + 1.0, this.pos.z);
   }
 
-  damage(amount, fromDir) {
+  damage(amount, fromDir, continuous = false) {
     if (!this.alive || this.invuln > 0) return false;
     this.health -= amount;
     this.hurtFlash = 1;
-    this.invuln = 0.25;
-    if (fromDir) this.vel.addScaledVector(fromDir, 2.2);
+    if (!continuous) {
+      this.invuln = 0.25;
+      if (fromDir) this.vel.addScaledVector(fromDir, 2.2);
+    }
     if (this.health <= 0) {
       this.health = 0;
       this.alive = false;
@@ -291,7 +295,7 @@ export class Player {
     /* ---- horizontal acceleration ---- */
     if (this.dashTime <= 0) {
       if (moving) {
-        const accelBlend = 1 - Math.exp(-ACCEL * 0.35 * dt);
+        const accelBlend = 1 - Math.exp(-ACCEL_BLEND_RATE * dt);
         this.vel.x += (wx * targetSpeed - this.vel.x) * accelBlend;
         this.vel.z += (wz * targetSpeed - this.vel.z) * accelBlend;
       } else {
@@ -338,14 +342,32 @@ export class Player {
 
     this.aimBlend += ((input.fire || input.aim ? 1 : 0) - this.aimBlend) * (1 - Math.exp(-14 * dt));
 
+    /* ---- facing ---- */
+    const aiming = this.aimBlend > 0.4;
+    let targetFacing = this.facing;
+    if (aiming) targetFacing = Math.PI - camYaw;
+    else if (moving) targetFacing = Math.atan2(-wx, -wz);
+    let diff = ((targetFacing - this.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    this.facing += diff * (1 - Math.exp(-dt * (aiming ? 18 : 11)));
+    this.object.position.set(this.pos.x, this.pos.y, this.pos.z);
+    this.object.rotation.y = this.facing;
+
     if (input.fire && this.fireCd <= 0 && this.reloading <= 0) {
       if (this.ammo > 0) {
         this.ammo--;
         this.fireCd = WEAPON.fireRate;
         this.recoil = 1;
+        this.fig.muzzle.updateWorldMatrix(true, false);
         const origin = _v3.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
         // Aim at whatever the crosshair is over so the shot and the reticle agree.
-        const dir = _v4.copy(input.aimPoint).sub(origin).normalize();
+        const cp = Math.cos(camPitch);
+        const aimForward = _v2.set(-Math.sin(camYaw) * cp, Math.sin(camPitch), Math.cos(camYaw) * cp);
+        const dir = _v4.copy(input.aimPoint).sub(origin);
+        const aimDistance = dir.length();
+        if (aimDistance > 1e-6) dir.divideScalar(aimDistance);
+        // A close wall (or a camera ray starting inside geometry) can put the
+        // hit point behind the muzzle. Never fire back over the player's shoulder.
+        if (aimDistance <= 1e-6 || dir.dot(aimForward) <= 0) dir.copy(aimForward);
         dir.x += (Math.random() - 0.5) * WEAPON.spread;
         dir.y += (Math.random() - 0.5) * WEAPON.spread;
         dir.z += (Math.random() - 0.5) * WEAPON.spread;
@@ -369,25 +391,15 @@ export class Player {
       hooks.onMelee && hooks.onMelee();
     }
 
-    this.muzzleLight.intensity *= Math.exp(-dt * 16);
-    this.muzzleLight.position.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
-
-    /* ---- facing ---- */
-    const aiming = this.aimBlend > 0.4;
-    let targetFacing = this.facing;
-    if (aiming) targetFacing = Math.PI - camYaw;
-    else if (moving) targetFacing = Math.atan2(-wx, -wz);
-    let diff = ((targetFacing - this.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    this.facing += diff * (1 - Math.exp(-dt * (aiming ? 18 : 11)));
-
     /* ---- animation ---- */
     const hs = Math.hypot(this.vel.x, this.vel.z);
     this.speedRatio = hs / SPRINT;
     this.animPhase += dt * (2.4 + hs * 1.55);
     this.animate(dt, hs, camPitch, aiming, moving);
 
-    this.object.position.set(this.pos.x, this.pos.y, this.pos.z);
-    this.object.rotation.y = this.facing;
+    this.fig.muzzle.updateWorldMatrix(true, false);
+    this.muzzleLight.intensity *= Math.exp(-dt * 16);
+    this.muzzleLight.position.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
 
     // footstep events
     this._stepAcc = (this._stepAcc || 0) + hs * dt;

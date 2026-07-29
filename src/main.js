@@ -18,7 +18,7 @@ let lastTime = performance.now();
 const rng = new Rng(90210);
 
 const state = {
-  mode: 'loading', // loading | menu | playing | paused | dead | won
+  mode: 'loading', // loading | menu | playing | paused | dead
   score: 0,
   wave: 0,
   waveState: 'idle', // idle | active | cleared
@@ -218,6 +218,15 @@ const WAVES = [
   { places: ['janacek', 'nadrazi'], types: ['whelp', 'spitter', 'golem'], cap: 12, interval: 2.2, hp: 1400,
     boss: 'svoboda', intro: 'DRAK BRNĚNSKÝ SE PROBUDIL', hint: 'Ulov ho na náměstí Svobody.' },
 ];
+const ENDLESS_WAVE = {
+  places: ['svoboda', 'petrov', 'spilberk'],
+  types: ['whelp', 'spitter', 'spitter', 'golem'],
+  cap: 14,
+  interval: 1.9,
+  hp: 1300,
+  intro: 'TRHLINY SE ZNOVU OTEVÍRAJÍ',
+  hint: 'Nekonečné vlny sílí. Drž centrum co nejdéle.',
+};
 
 let boss = null;
 
@@ -240,7 +249,7 @@ function updateToasts(dt) {
 function startWave(n) {
   state.wave = n;
   state.waveState = 'active';
-  const def = WAVES[Math.min(n - 1, WAVES.length - 1)];
+  const def = n <= WAVES.length ? WAVES[n - 1] : ENDLESS_WAVE;
   state.waveDef = def;
   const scale = 1 + Math.max(0, n - WAVES.length) * 0.35;
 
@@ -396,7 +405,10 @@ function wireGameplay() {
     state.score += e.type.score;
     audio.kill();
     if (e.typeId === 'boss') {
-      onVictory();
+      boss = null;
+      hud.hideBoss();
+      hud.toast('DRAK PADL — VLNY POKRAČUJÍ', 'big');
+      queueToast('Brno vydrželo. Jak dlouho vydržíš ty?', 'sub', 1.2);
       return;
     }
     const roll = Math.random();
@@ -404,11 +416,10 @@ function wireGameplay() {
     else if (roll < 0.42) spawnPickup('ammo', e.pos.x, e.pos.y, e.pos.z);
   };
 
-  enemies.onPlayerHit = (e, dmg, dir, continuous = false) => {
-    if (player.damage(dmg, dir)) {
-      audio.hurt();
-      chase.addShake(continuous ? 0.12 : 0.55);
-      hud.el.vignette.style.opacity = '0.75';
+  enemies.onPlayerHit = (e, dmg, dir, continuous = false, effectDt = 0) => {
+    if (player.damage(dmg, dir, continuous)) {
+      if (!continuous) audio.hurt();
+      chase.addShake(continuous ? 0.9 * effectDt : 0.55);
       if (!player.alive) onDeath();
     }
   };
@@ -497,6 +508,7 @@ function splash(point, radius, damage, owner) {
 const menuEl = document.getElementById('menu');
 const pauseEl = document.getElementById('pause');
 const goEl = document.getElementById('gameover');
+const resumeHintEl = document.getElementById('resume-hint');
 
 function startGame() {
   audio.init();
@@ -551,7 +563,7 @@ function pauseGame() {
   if (state.mode !== 'playing') return;
   state.mode = 'paused';
   input.releaseLock();
-  document.getElementById('resume-hint').textContent = '';
+  resumeHintEl.textContent = '';
   document.getElementById('pause-stats').innerHTML = statsHtml();
   pauseEl.classList.remove('hidden');
 }
@@ -560,7 +572,7 @@ async function resumeGame() {
   if (state.mode !== 'paused') return;
   const locked = await input.requestLock();
   if (!locked || state.mode !== 'paused') {
-    document.getElementById('resume-hint').textContent = 'Klikni na POKRAČOVAT pro opětovné uzamčení myši.';
+    resumeHintEl.textContent = 'Klikni na POKRAČOVAT pro opětovné uzamčení myši.';
     return;
   }
   state.mode = 'playing';
@@ -585,24 +597,8 @@ function onDeath() {
   audio.setMusicIntensity(0);
   chase.addShake(1.2);
   document.getElementById('go-title').textContent = 'PADL JSI';
-  document.getElementById('go-title').classList.remove('win');
   document.getElementById('go-stats').innerHTML = statsHtml();
   setTimeout(() => goEl.classList.remove('hidden'), 1200);
-}
-
-function onVictory() {
-  if (state.mode !== 'playing') return;
-  state.mode = 'won';
-  state.score += 20000;
-  input.releaseLock();
-  chase.addShake(1.6);
-  audio.setMusicIntensity(0.1);
-  hud.hideBoss();
-  hud.toast('DRAK JE MRTVÝ', 'big');
-  document.getElementById('go-title').textContent = 'BRNO JE ZACHRÁNĚNO';
-  document.getElementById('go-title').classList.add('win');
-  document.getElementById('go-stats').innerHTML = statsHtml();
-  setTimeout(() => goEl.classList.remove('hidden'), 2600);
 }
 
 document.getElementById('btn-play').addEventListener('click', startGame);
@@ -621,12 +617,27 @@ addEventListener('keydown', (e) => {
   }
 });
 
-addEventListener('resize', () => {
+function resizeRenderer() {
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
-});
+}
+
+function watchPixelRatio() {
+  const query = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+  const onChange = () => {
+    if (query.removeEventListener) query.removeEventListener('change', onChange);
+    else query.removeListener(onChange);
+    resizeRenderer();
+    watchPixelRatio();
+  };
+  if (query.addEventListener) query.addEventListener('change', onChange, { once: true });
+  else query.addListener(onChange);
+}
+
+addEventListener('resize', resizeRenderer);
+watchPixelRatio();
 
 canvas.addEventListener('click', () => {
   if (state.mode === 'playing' && !input.locked) input.requestLock();
@@ -658,7 +669,7 @@ function advance(dt) {
     camera.position.set(Math.cos(t) * 190 - 30, 96, Math.sin(t) * 190 + 40);
     camera.lookAt(-30, 24, 20);
     if (world) world.update(dt, state.time);
-  } else if (state.mode === 'dead' || state.mode === 'won') {
+  } else if (state.mode === 'dead') {
     // keep the world alive behind the overlay
     stepGame(dt, true);
   }
