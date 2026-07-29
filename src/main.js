@@ -120,7 +120,6 @@ scene.add(fillLight);
 const collision = new CollisionWorld();
 const input = new Input(canvas);
 const audio = new Audio();
-bindSettings(document, input, audio);
 let world = null;
 let vfx = null;
 let player = null;
@@ -352,11 +351,6 @@ const loadStep = document.getElementById('load-step');
 const loadError = document.getElementById('load-error');
 
 function createRenderer() {
-  const probe = document.createElement('canvas');
-  const gl = probe.getContext('webgl2') || probe.getContext('webgl');
-  if (!gl) throw new Error('WebGL is unavailable');
-  gl.getExtension('WEBGL_lose_context')?.loseContext();
-
   const instance = new THREE.WebGLRenderer({
     canvas,
     antialias: true,
@@ -397,33 +391,34 @@ async function step(pct, label) {
 
 async function boot() {
   try {
+    bindSettings(document, input, audio);
     renderer = createRenderer();
-  await step(8, 'kolize a fyzika');
-  vfx = new VFX(scene);
+    await step(8, 'kolize a fyzika');
+    vfx = new VFX(scene);
 
-  await step(20, 'ulice, tramvaje, fasády');
-  world = buildCity(scene, collision);
+    await step(20, 'ulice, tramvaje, fasády');
+    world = buildCity(scene, collision);
 
-  await step(62, 'Petrov, Špilberk, radnice');
-  player = new Player(scene, collision, { x: 16, z: -4, rng: gameplayRng });
-  chase = new ChaseCamera(camera, collision);
-  enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
+    await step(62, 'Petrov, Špilberk, radnice');
+    player = new Player(scene, collision, { x: 16, z: -4, rng: gameplayRng });
+    chase = new ChaseCamera(camera, collision);
+    enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
 
-  await step(78, 'dračí potomstvo');
-  hud = new Hud(world.minimap);
-  wireGameplay();
+    await step(78, 'dračí potomstvo');
+    hud = new Hud(world.minimap);
+    wireGameplay();
 
-  await step(92, 'osvětlení a stíny');
-  // prime the shadow camera and compile shaders
-  sun.target.position.copy(player.pos);
-  renderer.compile(scene, camera);
+    await step(92, 'osvětlení a stíny');
+    // prime the shadow camera and compile shaders
+    sun.target.position.copy(player.pos);
+    renderer.compile(scene, camera);
 
-  await step(100, 'hotovo');
-  loadEl.classList.add('done');
-  setTimeout(() => loadEl.remove(), 600);
-  state.mode = 'menu';
-  lastTime = performance.now();
-  renderer.setAnimationLoop(tick);
+    await step(100, 'hotovo');
+    loadEl.classList.add('done');
+    setTimeout(() => loadEl.remove(), 600);
+    state.mode = 'menu';
+    lastTime = performance.now();
+    renderer.setAnimationLoop(tick);
   } catch (error) {
     showBootError(error);
   }

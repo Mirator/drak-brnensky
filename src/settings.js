@@ -25,16 +25,29 @@ export function normalizeSettings(value = {}) {
   };
 }
 
-export function loadSettings(storage = localStorage) {
+function resolveStorage(storage) {
+  if (storage !== undefined) return storage;
   try {
+    return globalThis.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function loadSettings(storage) {
+  try {
+    storage = resolveStorage(storage);
+    if (!storage) return { ...DEFAULT_SETTINGS };
     return normalizeSettings(JSON.parse(storage.getItem(STORAGE_KEY) || '{}'));
   } catch {
     return { ...DEFAULT_SETTINGS };
   }
 }
 
-export function saveSettings(settings, storage = localStorage) {
+export function saveSettings(settings, storage) {
   try {
+    storage = resolveStorage(storage);
+    if (!storage) return false;
     storage.setItem(STORAGE_KEY, JSON.stringify(normalizeSettings(settings)));
     return true;
   } catch {
@@ -42,7 +55,8 @@ export function saveSettings(settings, storage = localStorage) {
   }
 }
 
-export function bindSettings(root, input, audio, storage = localStorage) {
+export function bindSettings(root, input, audio, storage) {
+  storage = resolveStorage(storage);
   let settings = loadSettings(storage);
   const controls = [...root.querySelectorAll('[data-setting]')];
   const outputs = [...root.querySelectorAll('[data-setting-value]')];
@@ -60,7 +74,9 @@ export function bindSettings(root, input, audio, storage = localStorage) {
     for (const output of outputs) {
       const key = output.dataset.settingValue;
       const value = settings[key];
-      output.textContent = `${Math.round(value * 100)} %`;
+      output.textContent = key === 'sensitivity'
+        ? `×${value.toFixed(2)}`
+        : `${Math.round(value * 100)} %`;
     }
   };
 
