@@ -215,7 +215,7 @@ export class Player {
   }
 
   damage(amount, fromDir, continuous = false) {
-    if (!this.alive || this.dashTime > 0 || (!continuous && this.invuln > 0)) return false;
+    if (!this.alive || this.invuln > 0) return false;
     this.health -= amount;
     this.hurtFlash = 1;
     if (!continuous) {
@@ -360,10 +360,11 @@ export class Player {
         const cp = Math.cos(camPitch);
         const aimForward = _v2.set(-Math.sin(camYaw) * cp, Math.sin(camPitch), Math.cos(camYaw) * cp);
         const dir = _v4.copy(input.aimPoint).sub(origin);
-        // A close wall can put the camera's hit point behind the muzzle. In that
-        // case fire along the camera ray instead of back over the player's shoulder.
-        if (dir.dot(aimForward) < 0.75) dir.copy(aimForward);
-        else dir.normalize();
+        const aimDistance = dir.length();
+        if (aimDistance > 1e-6) dir.divideScalar(aimDistance);
+        // A close wall (or a camera ray starting inside geometry) can put the
+        // hit point behind the muzzle. Never fire back over the player's shoulder.
+        if (aimDistance <= 1e-6 || dir.dot(aimForward) <= 0) dir.copy(aimForward);
         dir.x += (Math.random() - 0.5) * WEAPON.spread;
         dir.y += (Math.random() - 0.5) * WEAPON.spread;
         dir.z += (Math.random() - 0.5) * WEAPON.spread;

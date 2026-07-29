@@ -1038,12 +1038,14 @@ export class EnemyManager {
       }
       // cone damage
       const target = _v4.copy(player.centre);
-      const pd = _v2.copy(target).sub(origin);
+      const pd = _v2.set(target.x - e.pos.x, 0, target.z - e.pos.z);
       const pdist = pd.length();
-      if (pdist < 22) {
+      const sameLevel = Math.abs(player.pos.y - e.pos.y) < 5;
+      if (pdist < 22 && sameLevel) {
         pd.normalize();
-        if (pd.dot(dir) > 0.86 && this.collision.hasLineOfSight(origin, target, 22.5)) {
-          this.onPlayerHit && this.onPlayerHit(e, 22 * dt * 6, pd, true);
+        const horizontalDot = pd.x * dir.x + pd.z * dir.z;
+        if (horizontalDot > 0.86 && this.collision.hasLineOfSight(origin, target, 22.5)) {
+          this.onPlayerHit && this.onPlayerHit(e, 22 * dt * 6, pd, true, dt);
         }
       }
       if (e.breath <= 0) e.breathCd = e.phase2 ? 4.5 : 7;
