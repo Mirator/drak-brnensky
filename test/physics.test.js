@@ -44,3 +44,23 @@ test('ground height returns the highest reachable surface', () => {
   assert.equal(world.groundHeight(0, 0, 3), 3);
   assert.equal(world.groundHeight(0, 0, 1.5), 1);
 });
+
+test('remove clears a collider from the world and every occupied grid cell', () => {
+  const world = new CollisionWorld();
+  const box = world.add(24, 24, 30, 30, 0, 4);
+
+  assert.equal(world.raycast(
+    new THREE.Vector3(0, 2, 24),
+    new THREE.Vector3(1, 0, 0),
+    50,
+  ), 9);
+  assert.equal(world.remove(box), true);
+  assert.equal(world.boxes.includes(box), false);
+  assert.equal(world.query(0, 0, 50, 50).includes(box), false);
+  assert.equal(world.raycast(
+    new THREE.Vector3(0, 2, 24),
+    new THREE.Vector3(1, 0, 0),
+    50,
+  ), Infinity);
+  assert.equal(world.remove(box), false);
+});

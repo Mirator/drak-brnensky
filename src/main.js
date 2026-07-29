@@ -164,8 +164,7 @@ function damageRift(rift, amount) {
     state.score += 500;
     hud.toast('TRHLINA UZAVŘENA', 'good');
     rift.visual.dispose();
-    // the collider stays in the grid; make it harmless
-    rift.collider.top = rift.collider.bottom;
+    collision.remove(rift.collider);
     const i = rifts.indexOf(rift);
     if (i >= 0) rifts.splice(i, 1);
   }
@@ -519,7 +518,7 @@ function startGame() {
   enemies.clear();
   for (const r of [...rifts]) {
     r.visual.dispose();
-    r.collider.top = r.collider.bottom;
+    collision.remove(r.collider);
   }
   rifts.length = 0;
   for (const p of pickups) scene.remove(p.visual.group);

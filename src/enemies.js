@@ -773,7 +773,7 @@ export class EnemyManager {
       let moveZ = 0;
       let speed = e.speed;
 
-      if (e.state === 'chase' || e.state === 'strafe') {
+      if (e.state === 'chase') {
         const t = e.type;
         const wantRange = t.keepDistance ?? t.attackRange * 0.7;
         if (t.ranged && distFlat < wantRange * 0.75) {
