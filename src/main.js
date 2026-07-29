@@ -9,6 +9,7 @@ import { EnemyManager, ENEMY_TYPES } from './enemies.js';
 import { Hud } from './hud.js';
 import { Audio } from './audio.js';
 import { Rng } from './rng.js';
+import { bindSettings } from './settings.js';
 
 /* ==================================================================
    DRAK BRNĚNSKÝ — third-person action, central Brno
@@ -19,7 +20,7 @@ const GAMEPLAY_SEED = 90210;
 let gameplayRng = new Rng(GAMEPLAY_SEED);
 
 const state = {
-  mode: 'loading', // loading | menu | playing | paused | dead
+  mode: 'loading', // loading | menu | playing | paused | dead | error
   score: 0,
   wave: 0,
   waveState: 'idle', // idle | active | cleared
@@ -34,17 +35,7 @@ const state = {
 
 /* ---------------- renderer & scene ---------------- */
 const canvas = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({
-  canvas,
-  antialias: true,
-  powerPreference: 'high-performance',
-});
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.08;
+let renderer = null;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x2b2c38, 0.0021);
@@ -357,6 +348,37 @@ function updateWaves(dt) {
 const loadEl = document.getElementById('loading');
 const loadFill = document.getElementById('load-fill');
 const loadStep = document.getElementById('load-step');
+const loadError = document.getElementById('load-error');
+
+function createRenderer() {
+  const instance = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    powerPreference: 'high-performance',
+  });
+  instance.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+  instance.setSize(innerWidth, innerHeight);
+  instance.shadowMap.enabled = true;
+  instance.shadowMap.type = THREE.PCFSoftShadowMap;
+  instance.toneMapping = THREE.ACESFilmicToneMapping;
+  instance.toneMappingExposure = 1.08;
+  return instance;
+}
+
+function showBootError(error) {
+  console.error('Game initialization failed', error);
+  state.mode = 'error';
+  loadEl.classList.add('error');
+  loadEl.classList.remove('done');
+  loadError.classList.remove('hidden');
+  document.getElementById('btn-reload').onclick = () => location.reload();
+}
+
+addEventListener('unhandledrejection', (event) => {
+  if (state.mode !== 'loading') return;
+  event.preventDefault();
+  showBootError(event.reason);
+});
 
 // A timer-based yield (not rAF) so loading also completes in a background tab.
 const yieldFrame = () => new Promise((r) => setTimeout(r, 16));
@@ -368,32 +390,38 @@ async function step(pct, label) {
 }
 
 async function boot() {
-  await step(8, 'kolize a fyzika');
-  vfx = new VFX(scene);
+  try {
+    bindSettings(document, input, audio);
+    renderer = createRenderer();
+    await step(8, 'kolize a fyzika');
+    vfx = new VFX(scene);
 
-  await step(20, 'ulice, tramvaje, fasády');
-  world = buildCity(scene, collision);
+    await step(20, 'ulice, tramvaje, fasády');
+    world = buildCity(scene, collision);
 
-  await step(62, 'Petrov, Špilberk, radnice');
-  player = new Player(scene, collision, { x: 16, z: -4, rng: gameplayRng });
-  chase = new ChaseCamera(camera, collision);
-  enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
+    await step(62, 'Petrov, Špilberk, radnice');
+    player = new Player(scene, collision, { x: 16, z: -4, rng: gameplayRng });
+    chase = new ChaseCamera(camera, collision);
+    enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
 
-  await step(78, 'dračí potomstvo');
-  hud = new Hud(world.minimap);
-  wireGameplay();
+    await step(78, 'dračí potomstvo');
+    hud = new Hud(world.minimap);
+    wireGameplay();
 
-  await step(92, 'osvětlení a stíny');
-  // prime the shadow camera and compile shaders
-  sun.target.position.copy(player.pos);
-  renderer.compile(scene, camera);
+    await step(92, 'osvětlení a stíny');
+    // prime the shadow camera and compile shaders
+    sun.target.position.copy(player.pos);
+    renderer.compile(scene, camera);
 
-  await step(100, 'hotovo');
-  loadEl.classList.add('done');
-  setTimeout(() => loadEl.remove(), 600);
-  state.mode = 'menu';
-  lastTime = performance.now();
-  renderer.setAnimationLoop(tick);
+    await step(100, 'hotovo');
+    loadEl.classList.add('done');
+    setTimeout(() => loadEl.remove(), 600);
+    state.mode = 'menu';
+    lastTime = performance.now();
+    renderer.setAnimationLoop(tick);
+  } catch (error) {
+    showBootError(error);
+  }
 }
 
 /* ==================================================================
@@ -619,6 +647,7 @@ addEventListener('keydown', (e) => {
 });
 
 function resizeRenderer() {
+  if (!renderer) return;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
