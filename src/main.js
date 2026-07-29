@@ -18,7 +18,7 @@ let lastTime = performance.now();
 const rng = new Rng(90210);
 
 const state = {
-  mode: 'loading', // loading | menu | playing | paused | dead | won
+  mode: 'loading', // loading | menu | playing | paused | dead
   score: 0,
   wave: 0,
   waveState: 'idle', // idle | active | cleared
@@ -218,6 +218,15 @@ const WAVES = [
   { places: ['janacek', 'nadrazi'], types: ['whelp', 'spitter', 'golem'], cap: 12, interval: 2.2, hp: 1400,
     boss: 'svoboda', intro: 'DRAK BRNĚNSKÝ SE PROBUDIL', hint: 'Ulov ho na náměstí Svobody.' },
 ];
+const ENDLESS_WAVE = {
+  places: ['svoboda', 'petrov', 'spilberk'],
+  types: ['whelp', 'spitter', 'spitter', 'golem'],
+  cap: 14,
+  interval: 1.9,
+  hp: 1300,
+  intro: 'TRHLINY SE ZNOVU OTEVÍRAJÍ',
+  hint: 'Nekonečné vlny sílí. Drž centrum co nejdéle.',
+};
 
 let boss = null;
 
@@ -240,7 +249,7 @@ function updateToasts(dt) {
 function startWave(n) {
   state.wave = n;
   state.waveState = 'active';
-  const def = WAVES[Math.min(n - 1, WAVES.length - 1)];
+  const def = n <= WAVES.length ? WAVES[n - 1] : ENDLESS_WAVE;
   state.waveDef = def;
   const scale = 1 + Math.max(0, n - WAVES.length) * 0.35;
 
@@ -396,7 +405,10 @@ function wireGameplay() {
     state.score += e.type.score;
     audio.kill();
     if (e.typeId === 'boss') {
-      onVictory();
+      boss = null;
+      hud.hideBoss();
+      hud.toast('DRAK PADL — VLNY POKRAČUJÍ', 'big');
+      queueToast('Brno vydrželo. Jak dlouho vydržíš ty?', 'sub', 1.2);
       return;
     }
     const roll = Math.random();
@@ -580,24 +592,8 @@ function onDeath() {
   audio.setMusicIntensity(0);
   chase.addShake(1.2);
   document.getElementById('go-title').textContent = 'PADL JSI';
-  document.getElementById('go-title').classList.remove('win');
   document.getElementById('go-stats').innerHTML = statsHtml();
   setTimeout(() => goEl.classList.remove('hidden'), 1200);
-}
-
-function onVictory() {
-  if (state.mode !== 'playing') return;
-  state.mode = 'won';
-  state.score += 20000;
-  input.releaseLock();
-  chase.addShake(1.6);
-  audio.setMusicIntensity(0.1);
-  hud.hideBoss();
-  hud.toast('DRAK JE MRTVÝ', 'big');
-  document.getElementById('go-title').textContent = 'BRNO JE ZACHRÁNĚNO';
-  document.getElementById('go-title').classList.add('win');
-  document.getElementById('go-stats').innerHTML = statsHtml();
-  setTimeout(() => goEl.classList.remove('hidden'), 2600);
 }
 
 document.getElementById('btn-play').addEventListener('click', startGame);
@@ -652,7 +648,7 @@ function advance(dt) {
     camera.position.set(Math.cos(t) * 190 - 30, 96, Math.sin(t) * 190 + 40);
     camera.lookAt(-30, 24, 20);
     if (world) world.update(dt, state.time);
-  } else if (state.mode === 'dead' || state.mode === 'won') {
+  } else if (state.mode === 'dead') {
     // keep the world alive behind the overlay
     stepGame(dt, true);
   }
