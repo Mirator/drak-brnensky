@@ -24,7 +24,9 @@ export class ChaseCamera {
   }
 
   look(dx, dy, sensitivity) {
-    this.yaw -= dx * sensitivity;
+    // Forward is (-sin yaw, 0, cos yaw) and screen-right is (-cos yaw, 0, -sin yaw),
+    // so a rightward mouse move (dx > 0) has to *increase* yaw to turn right.
+    this.yaw += dx * sensitivity;
     this.pitch -= dy * sensitivity;
     const lim = Math.PI / 2 - 0.12;
     this.pitch = Math.max(-lim, Math.min(lim, this.pitch));
