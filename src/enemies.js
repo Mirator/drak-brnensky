@@ -877,7 +877,8 @@ export class EnemyManager {
             (e.pos.x - e.progressX) * targetX
             + (e.pos.z - e.progressZ) * targetZ
           ) / targetLen;
-          if (movedTowardTarget > 0.5 || distFlat <= e.type.attackRange + 2) {
+          const minProgress = Math.max(0.25, e.speed * e.progressT * 0.12);
+          if (movedTowardTarget > minProgress || distFlat <= e.type.attackRange + 2) {
             e.stuckT = 0;
           } else {
             e.stuckT += e.progressT;
@@ -892,7 +893,7 @@ export class EnemyManager {
           // try harder to slide around whatever is in the way
           e.avoidT = 0.4;
         }
-        if (e.stuckT > 4.5) {
+        if (e.stuckT >= 4.5) {
           e.stuckT = 0;
           e.progressT = 0;
           const relocated = ctx.findOpenPointNear && ctx.findOpenPointNear(pp.x, pp.z, 22);
