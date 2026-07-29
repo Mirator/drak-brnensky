@@ -46,7 +46,32 @@ export class Input {
   }
 
   requestLock() {
-    if (!this.locked) this.canvas.requestPointerLock();
+    if (this.locked) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer;
+      const done = (ok) => {
+        if (settled) return;
+        settled = true;
+        document.removeEventListener('pointerlockchange', onChange);
+        document.removeEventListener('pointerlockerror', onError);
+        clearTimeout(timer);
+        resolve(ok);
+      };
+      const onChange = () => done(document.pointerLockElement === this.canvas);
+      const onError = () => done(false);
+
+      document.addEventListener('pointerlockchange', onChange);
+      document.addEventListener('pointerlockerror', onError);
+      timer = setTimeout(() => done(false), 1000);
+
+      try {
+        const pending = this.canvas.requestPointerLock();
+        if (pending && typeof pending.catch === 'function') pending.catch(() => done(false));
+      } catch {
+        done(false);
+      }
+    });
   }
   releaseLock() {
     if (this.locked) document.exitPointerLock();

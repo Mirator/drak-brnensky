@@ -508,6 +508,7 @@ function splash(point, radius, damage, owner) {
 const menuEl = document.getElementById('menu');
 const pauseEl = document.getElementById('pause');
 const goEl = document.getElementById('gameover');
+const resumeHintEl = document.getElementById('resume-hint');
 
 function startGame() {
   audio.init();
@@ -562,15 +563,20 @@ function pauseGame() {
   if (state.mode !== 'playing') return;
   state.mode = 'paused';
   input.releaseLock();
+  resumeHintEl.textContent = '';
   document.getElementById('pause-stats').innerHTML = statsHtml();
   pauseEl.classList.remove('hidden');
 }
 
-function resumeGame() {
+async function resumeGame() {
   if (state.mode !== 'paused') return;
+  const locked = await input.requestLock();
+  if (!locked || state.mode !== 'paused') {
+    resumeHintEl.textContent = 'Klikni na POKRAČOVAT pro opětovné uzamčení myši.';
+    return;
+  }
   state.mode = 'playing';
   pauseEl.classList.add('hidden');
-  input.requestLock();
   audio.resume();
 }
 
@@ -611,11 +617,27 @@ addEventListener('keydown', (e) => {
   }
 });
 
-addEventListener('resize', () => {
+function resizeRenderer() {
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
-});
+}
+
+function watchPixelRatio() {
+  const query = matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+  const onChange = () => {
+    if (query.removeEventListener) query.removeEventListener('change', onChange);
+    else query.removeListener(onChange);
+    resizeRenderer();
+    watchPixelRatio();
+  };
+  if (query.addEventListener) query.addEventListener('change', onChange, { once: true });
+  else query.addListener(onChange);
+}
+
+addEventListener('resize', resizeRenderer);
+watchPixelRatio();
 
 canvas.addEventListener('click', () => {
   if (state.mode === 'playing' && !input.locked) input.requestLock();
