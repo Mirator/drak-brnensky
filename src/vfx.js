@@ -30,14 +30,17 @@ export class VFX {
     this.pGrav = new Float32Array(MAX_PARTICLES);
     this.pBase = new Float32Array(MAX_PARTICLES);
     this.pCount = 0;
+    this.pFree = [];
 
     const pMat = new THREE.ShaderMaterial({
       uniforms: { uTex: { value: this.glowTex } },
       vertexShader: /* glsl */ `
         attribute float size;
         varying vec3 vColor;
+        varying float vAlive;
         void main() {
           vColor = color;
+          vAlive = step(0.0001, size);
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
           gl_Position = projectionMatrix * mv;
           gl_PointSize = size * 320.0 / max(1.0, -mv.z);
@@ -45,7 +48,9 @@ export class VFX {
       fragmentShader: /* glsl */ `
         uniform sampler2D uTex;
         varying vec3 vColor;
+        varying float vAlive;
         void main() {
+          if (vAlive < 0.5) discard;
           vec4 t = texture2D(uTex, gl_PointCoord);
           gl_FragColor = vec4(vColor, 1.0) * t.a;
         }`,
@@ -88,16 +93,29 @@ export class VFX {
       scene.add(l);
       this.riftLights.push({ light: l, busy: false });
     }
+    this.pickupAssets = new Map();
   }
 
   /* ---------------- particles ---------------- */
   emit(x, y, z, vx, vy, vz, color, size, life, drag = 2.2, grav = 0) {
-    let i = this.pCount;
-    if (i >= MAX_PARTICLES) {
-      // recycle the oldest slot
-      i = this._recycle = ((this._recycle || 0) + 1) % MAX_PARTICLES;
-    } else {
-      this.pCount++;
+    let i;
+    while (this.pFree.length > 0) {
+      const candidate = this.pFree.pop();
+      if (candidate < this.pCount && this.pLife[candidate] <= 0) {
+        i = candidate;
+        break;
+      }
+    }
+    if (i === undefined) {
+      if (this.pCount < MAX_PARTICLES) {
+        i = this.pCount++;
+      } else {
+        // Every slot is live: replace the particle closest to expiry.
+        i = 0;
+        for (let j = 1; j < MAX_PARTICLES; j++) {
+          if (this.pLife[j] < this.pLife[i]) i = j;
+        }
+      }
     }
     const i3 = i * 3;
     this.pPos[i3] = x; this.pPos[i3 + 1] = y; this.pPos[i3 + 2] = z;
@@ -233,11 +251,13 @@ export class VFX {
     );
     beam.position.y = 13;
     g.add(beam);
-    const slot = this.riftLights.find((l) => !l.busy) ?? this.riftLights[0];
-    slot.busy = true;
-    const light = slot.light;
-    light.position.set(pos.x, pos.y + 1.6, pos.z);
-    light.distance = 30 * scale;
+    const slot = this.riftLights.find((l) => !l.busy) ?? null;
+    const light = slot?.light ?? null;
+    if (slot) {
+      slot.busy = true;
+      light.position.set(pos.x, pos.y + 1.6, pos.z);
+      light.distance = 30 * scale;
+    }
     g.position.copy(pos);
     this.scene.add(g);
 
@@ -251,7 +271,7 @@ export class VFX {
         const pulse = 1 + Math.sin(rift.t * 3.1) * 0.06;
         ring.scale.setScalar(pulse);
         ring2.scale.setScalar(2 - pulse);
-        light.intensity = (11 + Math.sin(rift.t * 5.5) * 4) * scale;
+        if (light) light.intensity = (11 + Math.sin(rift.t * 5.5) * 4) * scale;
         beam.material.opacity = 0.08 + Math.abs(Math.sin(rift.t * 1.3)) * 0.07;
         if (Math.random() < dt * 26) {
           this.emit(
@@ -264,8 +284,10 @@ export class VFX {
         }
       },
       dispose: () => {
-        light.intensity = 0;
-        slot.busy = false;
+        if (slot) {
+          light.intensity = 0;
+          slot.busy = false;
+        }
         this.scene.remove(g);
         g.traverse((o) => {
           if (o.geometry) o.geometry.dispose();
@@ -278,28 +300,37 @@ export class VFX {
 
   /* ---------------- pickup beacon ---------------- */
   makePickupVisual(color = 0x7ddf64) {
+    let assets = this.pickupAssets.get(color);
+    if (!assets) {
+      assets = {
+        boxGeometry: new THREE.BoxGeometry(0.42, 0.42, 0.42),
+        boxMaterial: new THREE.MeshStandardMaterial({
+          color, emissive: color, emissiveIntensity: 1.1, roughness: 0.4,
+        }),
+        haloMaterial: new THREE.SpriteMaterial({
+          map: this.glowTex, color, blending: THREE.AdditiveBlending,
+          transparent: true, depthWrite: false, opacity: 0.3,
+        }),
+        beamGeometry: new THREE.CylinderGeometry(0.16, 0.2, 3.4, 8, 1, true),
+        beamMaterial: new THREE.MeshBasicMaterial({
+          color, transparent: true, opacity: 0.06, blending: THREE.AdditiveBlending,
+          depthWrite: false, side: THREE.DoubleSide,
+        }),
+      };
+      this.pickupAssets.set(color, assets);
+    }
+
     const g = new THREE.Group();
-    const box = new THREE.Mesh(
-      new THREE.BoxGeometry(0.42, 0.42, 0.42),
-      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 1.1, roughness: 0.4 }),
-    );
+    const box = new THREE.Mesh(assets.boxGeometry, assets.boxMaterial);
     box.position.y = 0.8;
     box.castShadow = true;
     g.add(box);
     // A marker, not a flare: additive sprites this size read as screen artefacts.
-    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: this.glowTex, color, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, opacity: 0.3,
-    }));
+    const halo = new THREE.Sprite(assets.haloMaterial);
     halo.scale.set(0.95, 0.95, 1);
     halo.position.y = 0.8;
     g.add(halo);
-    const beam = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.16, 0.2, 3.4, 8, 1, true),
-      new THREE.MeshBasicMaterial({
-        color, transparent: true, opacity: 0.06, blending: THREE.AdditiveBlending, depthWrite: false,
-        side: THREE.DoubleSide,
-      }),
-    );
+    const beam = new THREE.Mesh(assets.beamGeometry, assets.beamMaterial);
     beam.position.y = 1.9;
     g.add(beam);
     return { group: g, box, halo };
@@ -375,8 +406,14 @@ export class VFX {
     /* particles */
     const n = this.pCount;
     for (let i = 0; i < n; i++) {
-      if (this.pLife[i] <= 0) { this.pSize[i] = 0; continue; }
+      if (this.pLife[i] <= 0) continue;
       this.pLife[i] -= dt;
+      if (this.pLife[i] <= 0) {
+        this.pLife[i] = 0;
+        this.pSize[i] = 0;
+        this.pFree.push(i);
+        continue;
+      }
       const i3 = i * 3;
       const drag = Math.exp(-this.pDrag[i] * dt);
       this.pVel[i3] *= drag;
@@ -392,6 +429,7 @@ export class VFX {
       const k = Math.max(0, this.pLife[i] / this.pMax[i]);
       this.pSize[i] = this.pBase[i] * (0.25 + k * 0.9);
     }
+    while (this.pCount > 0 && this.pLife[this.pCount - 1] <= 0) this.pCount--;
     const geo = this.points.geometry;
     geo.setDrawRange(0, this.pCount);
     geo.attributes.position.needsUpdate = true;
