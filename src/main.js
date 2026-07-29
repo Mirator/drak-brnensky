@@ -375,9 +375,9 @@ async function boot() {
   world = buildCity(scene, collision);
 
   await step(62, 'Petrov, Špilberk, radnice');
-  player = new Player(scene, collision, { x: 16, z: -4 });
+  player = new Player(scene, collision, { x: 16, z: -4, rng: gameplayRng });
   chase = new ChaseCamera(camera, collision);
-  enemies = new EnemyManager(scene, collision, vfx);
+  enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
 
   await step(78, 'dračí potomstvo');
   hud = new Hud(world.minimap);
@@ -511,7 +511,7 @@ const goEl = document.getElementById('gameover');
 const resumeHintEl = document.getElementById('resume-hint');
 
 function startGame() {
-  gameplayRng = new Rng(GAMEPLAY_SEED);
+  gameplayRng.reset(GAMEPLAY_SEED);
   audio.init();
   audio.resume();
   // reset

@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { Rng } from './rng.js';
 
 /* ==================================================================
    Dračí potomstvo — the things crawling out of the rifts.
@@ -15,6 +16,7 @@ const SKIN = {
   boss: 0x3f4a2e,
   bossBelly: 0x7a6a3a,
 };
+const ENEMY_VFX_SEED = 0xd4a6;
 
 export const ENEMY_TYPES = {
   whelp: {
@@ -513,10 +515,12 @@ function makeHealthBar(width) {
    Enemy manager
    ================================================================== */
 export class EnemyManager {
-  constructor(scene, collision, vfx) {
+  constructor(scene, collision, vfx, rng) {
     this.scene = scene;
     this.collision = collision;
     this.vfx = vfx;
+    this.rng = rng;
+    this.vfxRng = new Rng(ENEMY_VFX_SEED);
     this.list = [];
     this.pools = { whelp: [], spitter: [], golem: [], boss: [] };
     this.onDeath = null;
@@ -565,17 +569,17 @@ export class EnemyManager {
     e.pos.copy(pos);
     e.pos.y = this.collision.groundHeight(pos.x, pos.z, pos.y + 4, type.radius) || 0;
     e.vel.set(0, 0, 0);
-    e.facing = Math.random() * Math.PI * 2;
+    e.facing = this.rng.float(0, Math.PI * 2);
     e.state = 'spawn';
     e.stateT = 0;
-    e.attackCd = 0.6 + Math.random() * 0.6;
-    e.animPhase = Math.random() * 10;
+    e.attackCd = this.rng.float(0.6, 1.2);
+    e.animPhase = this.rng.float(0, 10);
     e.hurt = 0;
     e.flinch = 0;
     e.onGround = true;
-    e.avoidSide = Math.random() < 0.5 ? 1 : -1;
+    e.avoidSide = this.rng.chance(0.5) ? 1 : -1;
     e.repathT = 0;
-    e.strafe = Math.random() < 0.5 ? 1 : -1;
+    e.strafe = this.rng.chance(0.5) ? 1 : -1;
     e.attackWindup = 0;
     e.stuckT = 0;
     e.progressT = 0;
@@ -725,6 +729,7 @@ export class EnemyManager {
       this.pools[e.typeId].push(e);
     }
     this.list.length = 0;
+    this.vfxRng.reset(ENEMY_VFX_SEED);
   }
 
   /* ---------------------------------------------------------------- */
@@ -785,7 +790,7 @@ export class EnemyManager {
           moveX = -toZ * e.strafe;
           moveZ = toX * e.strafe;
           speed *= 0.75;
-          if (Math.random() < dt * 0.4) e.strafe *= -1;
+          if (this.rng.chance(dt * 0.4)) e.strafe *= -1;
         } else {
           moveX = toX; moveZ = toZ;
         }
@@ -829,7 +834,7 @@ export class EnemyManager {
             e.stateT = 0;
             e.attackWindup = t.ranged ? 0.55 : 0.34;
             e.attackDidHit = false;
-            e.attackCd = t.attackCd * (0.85 + Math.random() * 0.4);
+            e.attackCd = t.attackCd * this.rng.float(0.85, 1.25);
           }
         }
       } else if (e.state === 'attack') {
@@ -1030,10 +1035,10 @@ export class EnemyManager {
       for (let k = 0; k < 3; k++) {
         this.vfx.emit(
           origin.x + dir.x * 2, origin.y, origin.z + dir.z * 2,
-          dir.x * (16 + Math.random() * 16) + (Math.random() - 0.5) * 4,
-          1 + (Math.random() - 0.5) * 3,
-          dir.z * (16 + Math.random() * 16) + (Math.random() - 0.5) * 4,
-          _c1.set(Math.random() < 0.4 ? 0xffe08a : 0xff5a1a), 1.0, 0.55, 1.2, 0.6,
+          dir.x * this.vfxRng.float(16, 32) + this.vfxRng.float(-2, 2),
+          this.vfxRng.float(-0.5, 2.5),
+          dir.z * this.vfxRng.float(16, 32) + this.vfxRng.float(-2, 2),
+          _c1.set(this.vfxRng.chance(0.4) ? 0xffe08a : 0xff5a1a), 1.0, 0.55, 1.2, 0.6,
         );
       }
       // cone damage
