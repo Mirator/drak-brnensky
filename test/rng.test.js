@@ -29,3 +29,10 @@ test('pick only returns values from the supplied collection', () => {
     assert.ok(values.includes(rng.pick(values)));
   }
 });
+
+test('reset reproduces the original sequence without replacing the RNG', () => {
+  const rng = new Rng(42);
+  const first = [rng.next(), rng.next(), rng.next()];
+  rng.reset(42);
+  assert.deepEqual([rng.next(), rng.next(), rng.next()], first);
+});
