@@ -89,6 +89,14 @@ async function applyView(view) {
       b.startWave(view.wave);
       placePlayer(view.at, view.yaw);
       settle(40);
+      // the boss spawns wherever its wave definition says; find it and stand
+      // off from it so it is actually in frame rather than behind the camera
+      const bossEnemy = b.enemies.list.find((e) => e.typeId === 'boss' && e.hp > 0);
+      if (bossEnemy) {
+        const standoff = view.standoff || 26;
+        placePlayer([bossEnemy.pos.x, 0, bossEnemy.pos.z + standoff], Math.PI);
+        settle(30);
+      }
     } else {
       placePlayer(view.at, view.yaw);
       settle(40);
@@ -129,18 +137,27 @@ async function post(name, data) {
   return json.file;
 }
 
-export async function capture(prefix, names = null, size = [1600, 900]) {
+export async function capture(prefix, names = null, size = null) {
   const b = g();
+  /* Default to the live canvas size. Asking `shot()` for a different size makes
+   * it resize the composer, which corrupts it — the first capture of a run
+   * comes out correct and every later one is black. See docs/known-issues.md. */
+  if (!size) {
+    const live = b.renderer.getSize(new b.THREE.Vector2());
+    size = [live.x, live.y];
+  }
   const wanted = names ? VIEWS.filter((v) => names.includes(v.name)) : VIEWS;
   const written = [];
+  const fellBack = [];
   for (const view of wanted) {
     await applyView(view);
     const url = b.shot(size[0], size[1]);
+    if (b.lastShot && b.lastShot.fellBack) fellBack.push(view.name);
     written.push(await post(`${prefix}-${view.name}`, url));
     // free-cam views leave the camera detached; hand it back to the chase rig
     if (view.kind === 'free') b.chase._first = true;
   }
-  return { written, stats: b.stats() };
+  return { written, fellBack, stats: b.stats() };
 }
 
 export const captureAll = (prefix, size) => capture(prefix, null, size);

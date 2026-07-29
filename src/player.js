@@ -1,8 +1,30 @@
 import * as THREE from 'three';
+import { Rng } from './rng.js';
+import { buildSkeleton } from './character/rig.js';
+import { buildBody } from './character/mesh.js';
+import { buildWeapon } from './character/weapon.js';
+import { CharacterCloth } from './character/cloth.js';
+import { CharacterAnimator } from './character/anim.js';
+import { characterMaterials } from './character/materials.js';
 
 /* ==================================================================
-   The player: a hand-rigged blocky figure with procedural animation,
-   plus the movement / weapon state machine.
+   The player: movement / weapon state machine plus a fully procedural
+   skinned character.
+
+   The figure itself lives in src/character/:
+     rig.js        22-bone skeleton, proportions, analytic 2-bone IK
+     mesh.js       one skinned draw call for the whole body
+     weapon.js     the plasma thrower
+     cloth.js      verlet coat skirt + scarf
+     anim.js       locomotion, foot planting, aim layer, actions
+     materials.js  procedural fabric/metal/glow materials
+
+   The public surface main.js uses is unchanged:
+     new Player(scene, collision, {x, z, rng})
+     player.update(dt, cmd, yaw, pitch, {onShoot, onDryFire, onMelee,
+                   onJump, onDash, onStep, onLand})
+     pos vel centre object health maxHealth stamina maxStamina ammo
+     reloading alive hurtFlash damage() heal()  + the WEAPON export
    ================================================================== */
 
 const WALK = 5.4;
@@ -16,6 +38,9 @@ const JUMP_V = 8.6;
 const DASH_V = 21;
 const RADIUS = 0.42;
 const HEIGHT = 1.78;
+/** Costume / texture randomness gets its own stream so the shared
+ *  gameplay Rng keeps producing the same city and rift sequence. */
+const COSTUME_SEED = 0x44524b;
 
 export const WEAPON = {
   name: 'PLAZMOVÝ VRHAČ',
@@ -28,150 +53,67 @@ export const WEAPON = {
   speed: 145,
 };
 
-function mat(color, opts = {}) {
-  return new THREE.MeshStandardMaterial({ color, roughness: 0.72, metalness: 0.05, ...opts });
-}
-
-function buildFigure() {
-  const M = {
-    jacket: mat(0x3c5872, { emissive: 0x0c141c, emissiveIntensity: 1 }),
-    jacketDark: mat(0x2b3f52),
-    jeans: mat(0x3a4557),
-    boots: mat(0x26262b),
-    skin: mat(0xc9906a, { roughness: 0.85 }),
-    hair: mat(0x2b2118),
-    scarf: mat(0xc02a2a, { roughness: 0.9 }),
-    gun: mat(0x2a2e34, { metalness: 0.7, roughness: 0.35 }),
-    glow: new THREE.MeshStandardMaterial({
-      color: 0x8ff0ff, emissive: 0x5fd8ff, emissiveIntensity: 3.4, roughness: 0.3,
-    }),
-  };
-
-  const root = new THREE.Group();
-
-  const body = new THREE.Group();
-  body.position.y = 0.94; // hip height
-  root.add(body);
-
-  const hips = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.24, 0.26), M.jeans);
-  body.add(hips);
-
-  const torso = new THREE.Group();
-  torso.position.y = 0.12;
-  body.add(torso);
-
-  const chest = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.56, 0.3), M.jacket);
-  chest.position.y = 0.28;
-  torso.add(chest);
-  const chestTop = new THREE.Mesh(new THREE.BoxGeometry(0.54, 0.16, 0.32), M.jacketDark);
-  chestTop.position.y = 0.56;
-  torso.add(chestTop);
-  const scarf = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.1, 0.34), M.scarf);
-  scarf.position.y = 0.64;
-  torso.add(scarf);
-  const scarfTail = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.42, 0.07), M.scarf);
-  scarfTail.position.set(0.1, 0.44, -0.18);
-  torso.add(scarfTail);
-
-  const head = new THREE.Group();
-  head.position.y = 0.78;
-  torso.add(head);
-  const skull = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.28, 0.25), M.skin);
-  head.add(skull);
-  const hair = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.12, 0.27), M.hair);
-  hair.position.y = 0.11;
-  head.add(hair);
-  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.055, 0.03), M.glow);
-  visor.position.set(0, 0.02, -0.13);
-  head.add(visor);
-
-  // arms
-  const makeArm = (side) => {
-    const shoulder = new THREE.Group();
-    shoulder.position.set(side * 0.31, 0.5, 0);
-    const upper = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.34, 0.16), M.jacket);
-    upper.position.y = -0.17;
-    shoulder.add(upper);
-    const elbow = new THREE.Group();
-    elbow.position.y = -0.34;
-    shoulder.add(elbow);
-    const fore = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.32, 0.13), M.jacketDark);
-    fore.position.y = -0.16;
-    elbow.add(fore);
-    const hand = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 0.13), M.skin);
-    hand.position.y = -0.36;
-    elbow.add(hand);
-    torso.add(shoulder);
-    return { shoulder, elbow, hand };
-  };
-  const armL = makeArm(-1);
-  const armR = makeArm(1);
-
-  // the plasma thrower, parented to the right hand
-  const gun = new THREE.Group();
-  const receiver = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.14, 0.46), M.gun);
-  gun.add(receiver);
-  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 0.34, 8), M.gun);
-  barrel.rotation.x = Math.PI / 2;
-  barrel.position.set(0, 0.02, -0.36);
-  gun.add(barrel);
-  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.17, 0.1), M.gun);
-  grip.position.set(0, -0.13, 0.08);
-  gun.add(grip);
-  const coil = new THREE.Mesh(new THREE.TorusGeometry(0.07, 0.022, 6, 12), M.glow);
-  coil.rotation.y = Math.PI / 2;
-  coil.position.set(0, 0.02, -0.16);
-  gun.add(coil);
-  const cell = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.1, 0.12), M.glow);
-  cell.position.set(0, -0.02, 0.16);
-  gun.add(cell);
-  const muzzle = new THREE.Object3D();
-  muzzle.position.set(0, 0.02, -0.54);
-  gun.add(muzzle);
-  gun.position.set(0, -0.42, -0.06);
-  gun.rotation.x = -Math.PI / 2;
-  armR.elbow.add(gun);
-
-  // legs
-  const makeLeg = (side) => {
-    const hip = new THREE.Group();
-    hip.position.set(side * 0.13, -0.1, 0);
-    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.42, 0.19), M.jeans);
-    thigh.position.y = -0.21;
-    hip.add(thigh);
-    const knee = new THREE.Group();
-    knee.position.y = -0.42;
-    hip.add(knee);
-    const shin = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.4, 0.17), M.jeans);
-    shin.position.y = -0.2;
-    knee.add(shin);
-    const foot = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.11, 0.28), M.boots);
-    foot.position.set(0, -0.42, -0.05);
-    knee.add(foot);
-    body.add(hip);
-    return { hip, knee };
-  };
-  const legL = makeLeg(-1);
-  const legR = makeLeg(1);
-
-  root.traverse((o) => {
-    if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
-  });
-
-  return { root, body, torso, head, armL, armR, legL, legR, gun, muzzle, coil, cell, visor, M };
-}
-
 export class Player {
   constructor(scene, collision, opts = {}) {
     this.collision = collision;
-    this.rng = opts.rng;
-    this.fig = buildFigure();
-    this.object = this.fig.root;
+    this.rng = opts.rng || new Rng(COSTUME_SEED);
+    const costume = new Rng(opts.costumeSeed ?? COSTUME_SEED);
+
+    this.object = new THREE.Group();
+    this.object.name = 'player';
     scene.add(this.object);
 
+    /* ---- rig + meshes ----
+     * Textures get their own stream so the cached maps can be shared
+     * between instances without shifting the costume stream. */
+    const materials = characterMaterials(new Rng(COSTUME_SEED ^ 0x9e37), opts.materials);
+    this.materials = materials;
+    const rig = buildSkeleton();
+    this.rig = rig;
+    const { body, glow } = buildBody(rig, costume);
+
+    this.object.add(rig.root);
+    this.bodyMesh = new THREE.SkinnedMesh(body, materials.body);
+    this.glowMesh = new THREE.SkinnedMesh(glow, materials.bodyGlow);
+    this.object.add(this.bodyMesh, this.glowMesh);
+
+    this.weapon = buildWeapon(materials);
+    rig.byName.chest.add(this.weapon.root);
+
+    this.cloth = new CharacterCloth(rig, materials.cloth, costume);
+    this.object.add(this.cloth.mesh);
+
+    // bind in the rest pose, with the whole rig parented and at the origin
+    this.object.updateMatrixWorld(true);
+    const skeleton = new THREE.Skeleton(rig.bones);
+    this.skeleton = skeleton;
+    this.bodyMesh.bind(skeleton, this.bodyMesh.matrixWorld);
+    this.glowMesh.bind(skeleton, this.glowMesh.matrixWorld);
+    this.cloth.bindPins();
+    this.cloth.reset();
+
+    for (const m of [this.bodyMesh, this.glowMesh]) {
+      m.castShadow = true;
+      m.receiveShadow = true;
+      m.frustumCulled = false;
+    }
+
+    /** Triangles / draw calls, measured, for the perf budget check. */
+    let meshes = 0;
+    this.object.traverse((o) => { if (o.isMesh) meshes++; });
+    this.stats = {
+      triangles: body.index.count / 3 + glow.index.count / 3
+        + this.weapon.tris + this.cloth.triangles,
+      // body, bodyGlow, weapon metal, weapon glow, mag cell, cloth
+      drawCalls: meshes,
+    };
+
+    /* ---- state ---- */
     this.pos = new THREE.Vector3(opts.x ?? 0, 0, opts.z ?? 30);
     this.vel = new THREE.Vector3();
     this.facing = Math.PI;
+    this.facingVel = 0;
+    this.turnRate = 0;
     this.onGround = true;
     this.groundY = 0;
 
@@ -196,6 +138,25 @@ export class Player {
     this.speedRatio = 0;
     this.aimBlend = 0;
     this.kills = 0;
+    this.time = 0;
+    this._landImpact = 0;
+    this._wasAlive = true;
+    /* Ragdoll handoff. Set true once src/rigidbody.js owns the bone
+     * transforms (its PLAYER_RAGDOLL_SPEC already targets these bone names
+     * and the -y axis convention); the animator then stops posing and only
+     * keeps the coat and scarf simulating over the physics pose. */
+    this.ragdollControlled = false;
+
+    /* ---- animator ---- */
+    this.anim = new CharacterAnimator(rig, this.weapon, this.cloth, {
+      collision,
+      object: this.object,
+      sprintSpeed: SPRINT,
+    });
+    this.object.position.copy(this.pos);
+    this.object.rotation.y = this.facing;
+    this.object.updateMatrixWorld(true);
+    this.anim.reset(this.pos, this.facing);
 
     // muzzle light — one dynamic light is affordable and sells every shot
     this.muzzleLight = new THREE.PointLight(0x7fe4ff, 0, 16, 2);
@@ -203,10 +164,61 @@ export class Player {
     scene.add(this.muzzleLight);
 
     // hero light: keeps the character readable when they are in shadow, which
-    // at this time of day is most of the time.
-    this.heroLight = new THREE.PointLight(0xffe2c4, 3.6, 8, 2);
-    this.heroLight.position.set(0, 3.2, -1.5);
+    // at this time of day is most of the time. It sits behind and above the
+    // shoulders — the camera side — so the silhouette we actually look at is lit.
+    this.heroLight = new THREE.PointLight(0xffe2c4, 3.4, 9, 2);
+    this.heroLight.position.set(0.5, 2.6, 2.1);
     this.object.add(this.heroLight);
+
+    /* main.js runs stepGame(dt, frozen = true) once the player is dead, and
+     * that path does not call player.update() at all — so the collapse would
+     * freeze on the last living frame. Until main.js drives us while dead
+     * (see the note in the handover), advance the death pose from the render
+     * loop via the mesh's own onBeforeRender. Guarded so it stands down the
+     * moment update() starts being called with alive === false. */
+    this._updateDrivesDeath = false;
+    this._deathFrame = -1;
+    this._deathClock = 0;
+    this.bodyMesh.onBeforeRender = (renderer) => this._renderTick(renderer);
+
+    this._animState = {
+      pos: this.pos,
+      vel: this.vel,
+      facing: this.facing,
+      turnRate: 0,
+      onGround: true,
+      aimBlend: 0,
+      aimPoint: new THREE.Vector3(),
+      camPitch: 0,
+      ammoFrac: 1,
+      reloadT: -1,
+      meleeT: -1,
+      landImpact: 0,
+      alive: true,
+      time: 0,
+      groundY: 0,
+      wishX: 0,
+      wishZ: 0,
+      ragdoll: false,
+    };
+  }
+
+  /** Fallback driver for the death collapse. See the constructor. */
+  _renderTick(renderer) {
+    if (this.alive || this._updateDrivesDeath) { this._deathClock = 0; return; }
+    // one tick per render() call, not once per shadow/colour pass
+    const frame = renderer && renderer.info ? renderer.info.render.frame : ++this._deathFrame;
+    if (frame === this._deathFrame) return;
+    this._deathFrame = frame;
+    const now = (typeof performance !== 'undefined' ? performance.now() : Date.now()) * 0.001;
+    const prev = this._deathClock || now;
+    this._deathClock = now;
+    const dt = Math.min(1 / 20, now - prev);
+    if (!(dt > 0)) return;
+    this.time += dt;
+    this.pushAnimState(null, 0, 0);
+    this._animState.alive = false;
+    this.anim.update(dt, this._animState);
   }
 
   get eyePos() {
@@ -217,6 +229,12 @@ export class Player {
     return _v2.set(this.pos.x, this.pos.y + 1.0, this.pos.z);
   }
 
+  /** Muzzle position in world space, driven by the rig. */
+  get muzzlePos() {
+    this.weapon.muzzle.updateWorldMatrix(true, false);
+    return _v5.setFromMatrixPosition(this.weapon.muzzle.matrixWorld);
+  }
+
   damage(amount, fromDir, continuous = false) {
     if (!this.alive || this.invuln > 0) return false;
     this.health -= amount;
@@ -224,6 +242,19 @@ export class Player {
     if (!continuous) {
       this.invuln = 0.25;
       if (fromDir) this.vel.addScaledVector(fromDir, 2.2);
+    }
+    // directional flinch: fromDir points away from the attacker
+    if (fromDir) {
+      const cs = Math.cos(this.facing), sn = Math.sin(this.facing);
+      const lx = cs * fromDir.x - sn * fromDir.z;
+      const lz = sn * fromDir.x + cs * fromDir.z;
+      _hit.set(-lx, lz);
+      const len = _hit.length();
+      if (len > 1e-4) _hit.divideScalar(len);
+      this.anim.hit(_hit, amount >= 22 && !continuous);
+    } else if (!continuous) {
+      _hit.set(0, -1);
+      this.anim.hit(_hit, amount >= 22);
     }
     if (this.health <= 0) {
       this.health = 0;
@@ -242,19 +273,54 @@ export class Player {
     return true;
   }
 
+  /** Puts the rig back into a clean spawn state after a restart. */
+  respawn() {
+    this.object.rotation.x = 0;
+    this.object.rotation.z = 0;
+    this.facing = this.object.rotation.y;
+    this.facingVel = 0;
+    this.turnRate = 0;
+    this.aimBlend = 0;
+    this.recoil = 0;
+    this.hurtFlash = 0;
+    this.meleeAnim = 0;
+    this.dashTime = 0;
+    this.invuln = 0;
+    this.onGround = true;
+    this._landImpact = 0;
+    this.object.position.copy(this.pos);
+    this.object.updateMatrixWorld(true);
+    this.anim.reset(this.pos, this.facing);
+    this._wasAlive = true;
+    this._updateDrivesDeath = false;
+    this._deathClock = 0;
+  }
+
   /**
    * @param {number} dt
-   * @param {object} input  {forward, right, jump, sprint, dash, fire, melee, reload}
+   * @param {object} input  {forward, right, jump, sprint, dash, fire, aim,
+   *                         melee, reload, aimPoint}
    * @param {number} camYaw camera yaw the movement is relative to
-   * @param {object} hooks  {onShoot(origin, dir), onMelee(), onReload(), onJump(), onStep()}
+   * @param {number} camPitch
+   * @param {object} hooks  {onShoot(origin, dir), onDryFire, onMelee, onJump,
+   *                         onDash, onStep(i), onLand(v)}
    */
   update(dt, input, camYaw, camPitch, hooks) {
+    this.time += dt;
     if (!this.alive) {
-      // ragdoll-lite: slump to the ground
-      this.fig.root.rotation.x = Math.min(Math.PI / 2, this.fig.root.rotation.x + dt * 3);
-      this.fig.root.position.set(this.pos.x, this.pos.y, this.pos.z);
+      if (this._wasAlive) {
+        this._wasAlive = false;
+        this.anim.deadT = 0;
+      }
+      this._updateDrivesDeath = true;
+      this.object.position.set(this.pos.x, this.pos.y, this.pos.z);
+      this.object.rotation.y = this.facing;
+      this.pushAnimState(input, camPitch, 0);
+      this._animState.alive = false;
+      this.anim.update(dt, this._animState);
       return;
     }
+    if (!this._wasAlive) this.respawn();
 
     this.invuln = Math.max(0, this.invuln - dt);
     this.fireCd = Math.max(0, this.fireCd - dt);
@@ -293,7 +359,12 @@ export class Player {
     else this.stamina = Math.min(this.maxStamina, this.stamina + dt * 18);
     const targetSpeed = wantSprint ? SPRINT : WALK;
 
-    /* ---- horizontal acceleration ---- */
+    /* ---- horizontal acceleration ----
+     * The wanted velocity is handed to the animator: (wish - vel) is the
+     * frame-rate-invariant "how hard am I pushing" signal the lean springs
+     * need. A finite-difference acceleration would not be. */
+    this._animState.wishX = moving ? wx * targetSpeed : 0;
+    this._animState.wishZ = moving ? wz * targetSpeed : 0;
     if (this.dashTime <= 0) {
       if (moving) {
         const accelBlend = 1 - Math.exp(-ACCEL_BLEND_RATE * dt);
@@ -319,10 +390,12 @@ export class Player {
     this.pos.z += this.vel.z * dt;
     this.collision.resolve(this.pos, RADIUS, HEIGHT);
 
+    this._landImpact = 0;
     this.pos.y += this.vel.y * dt;
     const gy = this.collision.groundHeight(this.pos.x, this.pos.z, this.pos.y, RADIUS + 0.1, 0.75);
     if (this.pos.y <= gy) {
       if (!this.onGround && this.vel.y < -12) hooks.onLand && hooks.onLand(-this.vel.y);
+      if (!this.onGround) this._landImpact = -this.vel.y;
       this.pos.y = gy;
       this.vel.y = 0;
       this.onGround = true;
@@ -343,23 +416,52 @@ export class Player {
 
     this.aimBlend += ((input.fire || input.aim ? 1 : 0) - this.aimBlend) * (1 - Math.exp(-14 * dt));
 
-    /* ---- facing ---- */
+    /* ---- facing: spring-damped so direction changes overshoot and settle ---- */
     const aiming = this.aimBlend > 0.4;
     let targetFacing = this.facing;
     if (aiming) targetFacing = Math.PI - camYaw;
     else if (moving) targetFacing = Math.atan2(-wx, -wz);
-    let diff = ((targetFacing - this.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    this.facing += diff * (1 - Math.exp(-dt * (aiming ? 18 : 11)));
+    const diff = ((targetFacing - this.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    const prevFacing = this.facing;
+    // fixed-step spring keeps 30 Hz and 144 Hz identical
+    {
+      const k = aiming ? 620 : 300;
+      const c = aiming ? 42 : 26;
+      const H = 1 / 120;
+      let rem = Math.min(dt, 0.25);
+      let err = diff;
+      while (rem > 1e-6) {
+        const h = Math.min(H, rem);
+        rem -= h;
+        this.facingVel += (k * err - c * this.facingVel) * h;
+        const step = this.facingVel * h;
+        err -= step;
+        this.facing += step;
+      }
+    }
+    this.facing -= Math.PI * 2 * Math.round(this.facing / (Math.PI * 2));
+    this.turnRate = dt > 1e-5
+      ? (((this.facing - prevFacing + Math.PI * 3) % (Math.PI * 2)) - Math.PI) / dt
+      : 0;
+
     this.object.position.set(this.pos.x, this.pos.y, this.pos.z);
     this.object.rotation.y = this.facing;
 
+    /* ---- animation runs before the shot so the muzzle is where it looks ---- */
+    const hs = Math.hypot(this.vel.x, this.vel.z);
+    this.speedRatio = hs / SPRINT;
+    this.animPhase += dt * (2.4 + hs * 1.55);
+    this.pushAnimState(input, camPitch, this._landImpact);
+    this.anim.update(dt, this._animState);
+
+    /* ---- fire ---- */
     if (input.fire && this.fireCd <= 0 && this.reloading <= 0) {
       if (this.ammo > 0) {
         this.ammo--;
         this.fireCd = WEAPON.fireRate;
         this.recoil = 1;
-        this.fig.muzzle.updateWorldMatrix(true, false);
-        const origin = _v3.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
+        this.weapon.muzzle.updateWorldMatrix(true, false);
+        const origin = _v3.setFromMatrixPosition(this.weapon.muzzle.matrixWorld);
         // Aim at whatever the crosshair is over so the shot and the reticle agree.
         const cp = Math.cos(camPitch);
         const aimForward = _v2.set(-Math.sin(camYaw) * cp, Math.sin(camPitch), Math.cos(camYaw) * cp);
@@ -374,6 +476,7 @@ export class Player {
         dir.z += this.rng.float(-0.5, 0.5) * WEAPON.spread;
         dir.normalize();
         hooks.onShoot && hooks.onShoot(origin, dir);
+        this.anim.fired();
         this.muzzleLight.intensity = 26;
         // a little kick backwards
         this.vel.x -= dir.x * 0.7;
@@ -392,90 +495,53 @@ export class Player {
       hooks.onMelee && hooks.onMelee();
     }
 
-    /* ---- animation ---- */
-    const hs = Math.hypot(this.vel.x, this.vel.z);
-    this.speedRatio = hs / SPRINT;
-    this.animPhase += dt * (2.4 + hs * 1.55);
-    this.animate(dt, hs, camPitch, aiming, moving);
-
-    this.fig.muzzle.updateWorldMatrix(true, false);
+    /* ---- post ---- */
+    this.weapon.muzzle.updateWorldMatrix(true, false);
     this.muzzleLight.intensity *= Math.exp(-dt * 16);
-    this.muzzleLight.position.setFromMatrixPosition(this.fig.muzzle.matrixWorld);
+    this.muzzleLight.position.setFromMatrixPosition(this.weapon.muzzle.matrixWorld);
 
-    // footstep events
-    this._stepAcc = (this._stepAcc || 0) + hs * dt;
-    if (this._stepAcc > 2.1 && this.onGround) {
-      this._stepAcc = 0;
-      hooks.onStep && hooks.onStep(hs / SPRINT);
+    // footsteps fire on the frame a foot actually plants, which the animator
+    // paces at the same ~2.1 m spacing the old distance accumulator used.
+    if (hooks.onStep) {
+      for (let i = 0; i < this.anim.stepEvents.length; i++) hooks.onStep(this.anim.stepEvents[i]);
+    }
+
+    // damage tint only — a constant emissive washes the whole figure out
+    const hf = this.hurtFlash;
+    for (const m of [this.materials.body, this.materials.cloth]) {
+      if (!m || !m.emissive) continue;
+      m.emissive.setRGB(hf * 0.5, hf * 0.05, hf * 0.05);
+      m.emissiveIntensity = hf * 0.85;
     }
   }
 
-  animate(dt, speed, camPitch, aiming, moving) {
-    const f = this.fig;
-    const p = this.animPhase;
-    const run = Math.min(1, speed / SPRINT);
-    const swing = moving ? 0.28 + run * 0.72 : 0;
-    const air = this.onGround ? 0 : 1;
-
-    // legs
-    const legAmp = 0.95 * swing;
-    f.legL.hip.rotation.x = Math.sin(p) * legAmp - air * 0.45;
-    f.legR.hip.rotation.x = Math.sin(p + Math.PI) * legAmp - air * 0.15;
-    f.legL.knee.rotation.x = Math.max(0, -Math.sin(p - 0.6)) * legAmp * 1.15 + air * 0.7;
-    f.legR.knee.rotation.x = Math.max(0, -Math.sin(p + Math.PI - 0.6)) * legAmp * 1.15 + air * 0.2;
-
-    // body bob & lean
-    const bob = Math.abs(Math.sin(p)) * 0.055 * swing;
-    f.body.position.y = 0.94 + bob - (air ? 0.04 : 0);
-    f.torso.rotation.z = Math.sin(p) * 0.045 * swing;
-    f.torso.rotation.x = 0.06 + run * 0.16 - camPitch * 0.12 * this.aimBlend;
-    f.torso.rotation.y = Math.sin(p) * 0.06 * swing;
-
-    // head roughly tracks where you look
-    f.head.rotation.x = -camPitch * 0.45 * (0.3 + this.aimBlend);
-    f.head.rotation.y = Math.sin(p * 0.5) * 0.05;
-
-    // arms: idle/run swing blended with a two-handed aim pose
-    const armSwing = Math.sin(p + Math.PI) * 0.55 * swing;
-    const idleL = -armSwing * 0.9;
-    const idleR = armSwing * 0.9;
-
-    const aim = this.aimBlend;
-    const recoilKick = this.recoil * 0.5;
-    const melee = this.meleeAnim;
-
-    // right arm (gun): +PI/2 about X swings the arm out in front of the body
-    const aimR = Math.PI / 2 + camPitch * 0.85 + recoilKick;
-    f.armR.shoulder.rotation.x = THREE.MathUtils.lerp(idleR * 0.6 + 0.1, aimR, aim);
-    f.armR.shoulder.rotation.z = THREE.MathUtils.lerp(-0.12, -0.24, aim);
-    f.armR.shoulder.rotation.y = THREE.MathUtils.lerp(0, -0.18, aim);
-    f.armR.elbow.rotation.x = THREE.MathUtils.lerp(-0.55 - Math.abs(idleR) * 0.4, -0.46 + recoilKick * 0.7, aim);
-
-    // left arm supports the gun when aiming, punches on melee
-    const aimL = Math.PI / 2 + camPitch * 0.85;
-    f.armL.shoulder.rotation.x = THREE.MathUtils.lerp(idleL * 0.6 + 0.1, aimL, aim);
-    f.armL.shoulder.rotation.z = THREE.MathUtils.lerp(0.12, 0.42, aim);
-    f.armL.shoulder.rotation.y = THREE.MathUtils.lerp(0, 0.5, aim);
-    f.armL.elbow.rotation.x = THREE.MathUtils.lerp(-0.55 - Math.abs(idleL) * 0.4, -0.8, aim);
-
-    if (melee > 0) {
-      // quick straight-arm plasma punch
-      const k = Math.sin(melee * Math.PI);
-      f.armL.shoulder.rotation.x = Math.PI / 2 + 0.25 + k * 0.5;
-      f.armL.elbow.rotation.x = -1.3 + k * 1.2;
-      f.torso.rotation.y -= k * 0.45;
+  pushAnimState(input, camPitch, landImpact) {
+    const st = this._animState;
+    st.facing = this.facing;
+    st.turnRate = this.turnRate;
+    st.onGround = this.onGround;
+    st.aimBlend = this.aimBlend;
+    st.camPitch = camPitch;
+    st.ammoFrac = this.ammo / WEAPON.mag;
+    st.reloadT = this.reloading > 0
+      ? Math.min(1, 1 - this.reloading / WEAPON.reloadTime)
+      : -1;
+    st.meleeT = this.meleeAnim > 0 ? 1 - this.meleeAnim : -1;
+    st.landImpact = landImpact;
+    st.alive = this.alive;
+    st.ragdoll = this.ragdollControlled;
+    st.time = this.time;
+    st.groundY = this.groundY;
+    if (input && input.aimPoint) st.aimPoint.copy(input.aimPoint);
+    else {
+      // no crosshair resolved yet: look straight ahead
+      st.aimPoint.set(
+        this.pos.x - Math.sin(this.facing) * 12,
+        this.pos.y + 1.5,
+        this.pos.z - Math.cos(this.facing) * 12,
+      );
     }
-
-    // gun glow pulses with charge
-    const charge = this.reloading > 0 ? 1 - this.reloading / WEAPON.reloadTime : this.ammo / WEAPON.mag;
-    f.M.glow.emissiveIntensity = 1.4 + charge * 2.4 + this.recoil * 5;
-    f.coil.rotation.z += dt * (2 + this.recoil * 40);
-
-    // hurt flash tints the jacket
-    // damage tint only — a constant emissive washes the whole figure out
-    const hf = this.hurtFlash;
-    f.M.jacket.emissive.setRGB(hf * 0.45, hf * 0.04, hf * 0.04);
-    f.M.jacket.emissiveIntensity = hf * 0.8;
+    return st;
   }
 }
 
@@ -483,3 +549,5 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
+const _v5 = new THREE.Vector3();
+const _hit = new THREE.Vector2();
