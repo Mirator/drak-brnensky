@@ -416,11 +416,10 @@ function wireGameplay() {
     else if (roll < 0.42) spawnPickup('ammo', e.pos.x, e.pos.y, e.pos.z);
   };
 
-  enemies.onPlayerHit = (e, dmg, dir, continuous = false) => {
-    if (player.damage(dmg, dir)) {
-      audio.hurt();
-      chase.addShake(continuous ? 0.12 : 0.55);
-      hud.el.vignette.style.opacity = '0.75';
+  enemies.onPlayerHit = (e, dmg, dir, continuous = false, effectDt = 0) => {
+    if (player.damage(dmg, dir, continuous)) {
+      if (!continuous) audio.hurt();
+      chase.addShake(continuous ? 0.9 * effectDt : 0.55);
       if (!player.alive) onDeath();
     }
   };

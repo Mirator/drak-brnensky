@@ -104,10 +104,16 @@ export class CollisionWorld {
    * Mutates `pos` (a THREE.Vector3) and returns true when something was hit.
    */
   resolve(pos, radius, height, stepUp = 0.7) {
-    const boxes = this.query(pos.x - radius, pos.z - radius, pos.x + radius, pos.z + radius, _tmpB);
     let hit = false;
     const headY = pos.y + height;
     for (let iter = 0; iter < 3; iter++) {
+      // A push from the previous pass can move the capsule into a box that was
+      // outside its old query rectangle, so refresh candidates every pass.
+      const boxes = this.query(
+        pos.x - radius, pos.z - radius,
+        pos.x + radius, pos.z + radius,
+        _tmpB,
+      );
       let moved = false;
       for (let i = 0; i < boxes.length; i++) {
         const b = boxes[i];
@@ -148,20 +154,31 @@ export class CollisionWorld {
   }
 
   /**
-   * Ray-march against the boxes. Cheap, robust, and accurate enough for
-   * bullets and line-of-sight checks. Returns hit distance or Infinity.
+   * Raycast against candidate AABBs with an exact slab intersection. Returns
+   * hit distance or Infinity. `stepSize` is retained for caller compatibility.
    */
   raycast(origin, dir, maxDist, stepSize = 0.6) {
-    const p = _rayP.copy(origin);
-    let t = 0;
-    while (t < maxDist) {
-      const s = Math.min(stepSize, maxDist - t);
-      p.addScaledVector(dir, s);
-      t += s;
-      if (p.y < 0) return t;
-      if (this.isSolidAt(p.x, p.y, p.z)) return t;
+    void stepSize;
+    let nearest = Infinity;
+
+    if (origin.y < 0) return 0;
+    if (dir.y < -1e-9) {
+      const groundT = -origin.y / dir.y;
+      if (groundT <= maxDist) nearest = groundT;
     }
-    return Infinity;
+
+    const endX = origin.x + dir.x * maxDist;
+    const endZ = origin.z + dir.z * maxDist;
+    const boxes = this.query(
+      Math.min(origin.x, endX), Math.min(origin.z, endZ),
+      Math.max(origin.x, endX), Math.max(origin.z, endZ),
+      _rayBoxes,
+    );
+    for (let i = 0; i < boxes.length; i++) {
+      const t = rayBoxDistance(origin, dir, boxes[i], Math.min(maxDist, nearest));
+      if (t < nearest) nearest = t;
+    }
+    return nearest;
   }
 
   hasLineOfSight(a, b, maxDist = 200) {
@@ -176,5 +193,45 @@ export class CollisionWorld {
 const _seen = new Set();
 const _tmpA = [];
 const _tmpB = [];
-const _rayP = new THREE.Vector3();
+const _rayBoxes = [];
 const _rayD = new THREE.Vector3();
+
+function rayBoxDistance(origin, dir, box, maxDist) {
+  let tMin = 0;
+  let tMax = maxDist;
+
+  if (Math.abs(dir.x) < 1e-9) {
+    if (origin.x < box.x0 || origin.x > box.x1) return Infinity;
+  } else {
+    let a = (box.x0 - origin.x) / dir.x;
+    let b = (box.x1 - origin.x) / dir.x;
+    if (a > b) [a, b] = [b, a];
+    tMin = Math.max(tMin, a);
+    tMax = Math.min(tMax, b);
+    if (tMin > tMax) return Infinity;
+  }
+
+  if (Math.abs(dir.y) < 1e-9) {
+    if (origin.y < box.bottom || origin.y > box.top) return Infinity;
+  } else {
+    let a = (box.bottom - origin.y) / dir.y;
+    let b = (box.top - origin.y) / dir.y;
+    if (a > b) [a, b] = [b, a];
+    tMin = Math.max(tMin, a);
+    tMax = Math.min(tMax, b);
+    if (tMin > tMax) return Infinity;
+  }
+
+  if (Math.abs(dir.z) < 1e-9) {
+    if (origin.z < box.z0 || origin.z > box.z1) return Infinity;
+  } else {
+    let a = (box.z0 - origin.z) / dir.z;
+    let b = (box.z1 - origin.z) / dir.z;
+    if (a > b) [a, b] = [b, a];
+    tMin = Math.max(tMin, a);
+    tMax = Math.min(tMax, b);
+    if (tMin > tMax) return Infinity;
+  }
+
+  return tMin <= maxDist && tMax >= 0 ? Math.max(0, tMin) : Infinity;
+}

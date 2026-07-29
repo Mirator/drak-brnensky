@@ -677,6 +677,8 @@ export class EnemyManager {
         0, Math.max(0.1, e.type.height - 0.2), 0,
       );
       if (t.dist > r) continue;
+      _v3.set(e.pos.x, e.pos.y + e.type.height * 0.55, e.pos.z);
+      if (!this.collision.hasLineOfSight(origin, _v3, maxDist)) continue;
       // prefer the nearest along the ray, tie-broken by how centred it is
       const score = t.s * maxDist + t.dist * 4;
       if (score < bestScore) {
@@ -1035,12 +1037,15 @@ export class EnemyManager {
         );
       }
       // cone damage
-      const pd = _v1.set(player.pos.x - e.pos.x, 0, player.pos.z - e.pos.z);
+      const target = _v4.copy(player.centre);
+      const pd = _v2.set(target.x - e.pos.x, 0, target.z - e.pos.z);
       const pdist = pd.length();
-      if (pdist < 22) {
+      const sameLevel = Math.abs(player.pos.y - e.pos.y) < 5;
+      if (pdist < 22 && sameLevel) {
         pd.normalize();
-        if (pd.x * dir.x + pd.z * dir.z > 0.86) {
-          this.onPlayerHit && this.onPlayerHit(e, 22 * dt * 6, pd, true);
+        const horizontalDot = pd.x * dir.x + pd.z * dir.z;
+        if (horizontalDot > 0.86 && this.collision.hasLineOfSight(origin, target, 22.5)) {
+          this.onPlayerHit && this.onPlayerHit(e, 22 * dt * 6, pd, true, dt);
         }
       }
       if (e.breath <= 0) e.breathCd = e.phase2 ? 4.5 : 7;
@@ -1223,4 +1228,5 @@ function closestOnSegments(px, py, pz, ux, uy, uz, qx, qy, qz, vx, vy, vz) {
 const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
+const _v4 = new THREE.Vector3();
 const _c1 = new THREE.Color();
