@@ -522,7 +522,6 @@ export class EnemyManager {
     this.onDeath = null;
     this.onPlayerHit = null;
     this.onShoot = null;
-    this.corpses = [];
   }
 
   get aliveCount() {
@@ -579,7 +578,16 @@ export class EnemyManager {
     e.strafe = Math.random() < 0.5 ? 1 : -1;
     e.attackWindup = 0;
     e.stuckT = 0;
-    e.bestDist = undefined;
+    e.progressT = 0;
+    e.progressX = undefined;
+    e.progressZ = undefined;
+    e.progressTargetX = undefined;
+    e.progressTargetZ = undefined;
+    e.avoidT = 0;
+    e.avoidX = 0;
+    e.avoidZ = 0;
+    e.breath = 0;
+    e.breathCd = 6;
     e.attackDidHit = false;
     e.scale = type.scale ?? 1;
     e.object.visible = true;
@@ -852,32 +860,57 @@ export class EnemyManager {
        * These things steer, they don't path-find. A whelp wedged behind a
        * fountain would stall the whole wave, so if one stops making progress
        * for long enough it burrows and re-emerges near the player. */
-      if (e.state === 'chase' || e.state === 'strafe') {
-        // Progress, not speed: something sliding along a wall is still stuck.
-        e.progressT = (e.progressT || 0) + dt;
-        if (e.bestDist === undefined) e.bestDist = distFlat;
-        if (distFlat < e.bestDist - 1.0) {
-          e.bestDist = distFlat;
-          e.stuckT = 0;
-        } else if (distFlat > e.type.attackRange + 2) {
-          e.stuckT = (e.stuckT || 0) + dt;
+      if (e.state === 'chase') {
+        // Measure movement toward the player's previous position. Distance to
+        // the current player is not enough: a freely moving enemy can lose
+        // ground when the player is faster, which must not count as "stuck".
+        if (e.progressX === undefined) {
+          e.progressX = e.pos.x;
+          e.progressZ = e.pos.z;
+          e.progressTargetX = pp.x;
+          e.progressTargetZ = pp.z;
+        }
+        e.progressT += dt;
+        if (e.progressT >= 0.75) {
+          const targetX = e.progressTargetX - e.progressX;
+          const targetZ = e.progressTargetZ - e.progressZ;
+          const targetLen = Math.hypot(targetX, targetZ) || 1;
+          const movedTowardTarget = (
+            (e.pos.x - e.progressX) * targetX
+            + (e.pos.z - e.progressZ) * targetZ
+          ) / targetLen;
+          const minProgress = Math.max(0.25, e.speed * e.progressT * 0.12);
+          if (movedTowardTarget > minProgress || distFlat <= e.type.attackRange + 2) {
+            e.stuckT = 0;
+          } else {
+            e.stuckT += e.progressT;
+          }
+          e.progressT = 0;
+          e.progressX = e.pos.x;
+          e.progressZ = e.pos.z;
+          e.progressTargetX = pp.x;
+          e.progressTargetZ = pp.z;
         }
         if (e.stuckT > 1.2 && e.stuckT < 4.5) {
           // try harder to slide around whatever is in the way
           e.avoidT = 0.4;
         }
-        if (e.stuckT > 4.5) {
+        if (e.stuckT >= 4.5) {
           e.stuckT = 0;
-          e.bestDist = undefined;
+          e.progressT = 0;
           const relocated = ctx.findOpenPointNear && ctx.findOpenPointNear(pp.x, pp.z, 22);
           if (relocated) {
             this.vfx.burst(_v1.copy(e.pos).setY(e.pos.y + 0.5), 0x8a6a3a, 14, 5, { size: 0.4, life: 0.6 });
             e.pos.copy(relocated);
             e.vel.set(0, 0, 0);
-            e.bestDist = undefined;
+            e.progressX = undefined;
             this.vfx.burst(_v1.copy(e.pos).setY(e.pos.y + 0.5), 0xff6a2a, 18, 6, { size: 0.45, life: 0.7, up: 3 });
           }
         }
+      } else {
+        e.progressT = 0;
+        e.progressX = undefined;
+        e.stuckT = 0;
       }
 
       /* --- motion --- */
@@ -897,7 +930,7 @@ export class EnemyManager {
       {
         const rr = e.type.radius + 0.75;
         if (distFlat < rr) {
-          const push = ((rr - distFlat) / rr) * 9;
+          const push = ((rr - distFlat) / rr) * 540 * dt;
           e.vel.x -= toX * push;
           e.vel.z -= toZ * push;
         }
@@ -913,7 +946,7 @@ export class EnemyManager {
         const d2 = ox * ox + oz * oz;
         if (d2 < rr * rr && d2 > 1e-6) {
           const d = Math.sqrt(d2);
-          const push = ((rr - d) / d) * 2.6 / e.type.mass;
+          const push = ((rr - d) / d) * 156 * dt / e.type.mass;
           e.vel.x += ox * push;
           e.vel.z += oz * push;
         }

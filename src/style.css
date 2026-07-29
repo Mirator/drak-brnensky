@@ -385,7 +385,6 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.07); color: #fff; box-sha
 .overlay-card { text-align: center; padding: 40px 56px; }
 .overlay-card h2 { font-size: 44px; letter-spacing: 0.16em; margin: 0 0 18px; font-weight: 800; }
 #go-title { color: var(--red); }
-#go-title.win { color: var(--amber); }
 
 .pause-stats {
   font-family: var(--mono);
