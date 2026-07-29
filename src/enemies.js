@@ -961,8 +961,10 @@ export class EnemyManager {
     } else {
       const dir = _v2.copy(player.centre).sub(origin);
       const projectileSpeed = 42;
-      const flightTime = dir.length() / projectileSpeed;
-      dir.addScaledVector(player.vel, flightTime).normalize();
+      const flightTime = Math.min(dir.length() / projectileSpeed, 0.45);
+      dir.x += player.vel.x * flightTime;
+      dir.z += player.vel.z * flightTime;
+      dir.normalize();
       this.onShoot && this.onShoot(e, origin, dir, {
         color: 0xff8a3a, speed: projectileSpeed, damage: e.damage, radius: 0.5, scale: 1.5, splash: 2.2, trail: 4,
       });
