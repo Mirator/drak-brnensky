@@ -11,11 +11,11 @@ function canvas(w, h) {
   return c;
 }
 
-function grain(ctx, w, h, amount = 14, alpha = 0.5) {
+function grain(ctx, w, h, amount, rng) {
   const img = ctx.getImageData(0, 0, w, h);
   const d = img.data;
   for (let i = 0; i < d.length; i += 4) {
-    const n = (Math.random() - 0.5) * amount;
+    const n = (rng.next() - 0.5) * amount;
     d[i] = Math.max(0, Math.min(255, d[i] + n));
     d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + n));
     d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + n));
@@ -97,7 +97,7 @@ function facadeBay(plaster, trim, opts = {}) {
   ctx.fillStyle = trim;
   ctx.fillRect(wx - 10, wy + wh + 5, ww + 20, 6);
 
-  grain(ctx, S, S, 16);
+  grain(ctx, S, S, 16, rng);
 
   // emissive: which windows glow at dusk (random per building via uv offset)
   const e = canvas(S, S);
@@ -172,7 +172,7 @@ export function makeRoofMaterial() {
       ctx.stroke();
     }
   }
-  grain(ctx, S, S, 22);
+  grain(ctx, S, S, 22, rng);
   return new THREE.MeshStandardMaterial({
     map: tex(c, 1, 1),
     roughness: 0.95,
@@ -201,7 +201,7 @@ export function makeStoneMaterial(base = '#8d8577', mortar = '#6e675c', scale = 
       x += w;
     }
   }
-  grain(ctx, S, S, 20);
+  grain(ctx, S, S, 20, rng);
   const t = tex(c, scale, scale);
   return new THREE.MeshStandardMaterial({ map: t, roughness: 0.9, metalness: 0.02 });
 }
@@ -233,7 +233,7 @@ export function makeCobbleTexture(size = 512) {
       ctx.fill();
     }
   }
-  grain(ctx, size, size, 18);
+  grain(ctx, size, size, 18, rng);
   return c;
 }
 

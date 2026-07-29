@@ -24,6 +24,11 @@ const TEX_SIZE = 4096;
 const MINI_SIZE = 512;
 
 export const FLAG = { FREE: 0, ROAD: 30, PLAZA: 60, PARK: 90, RESERVED: 120, TRACK: 150 };
+const FLAG_STEP = 30;
+
+export function snapFlag(value) {
+  return Math.max(FLAG.FREE, Math.min(FLAG.TRACK, Math.round(value / FLAG_STEP) * FLAG_STEP));
+}
 
 /** Named places — used for objectives, the compass and the minimap. */
 export const PLACES = {
@@ -167,7 +172,7 @@ class Painter {
   readFlags() {
     const data = this.fc.getImageData(0, 0, GN, GN).data;
     const flags = new Uint8Array(GN * GN);
-    for (let i = 0, j = 0; i < data.length; i += 4, j++) flags[j] = data[i];
+    for (let i = 0, j = 0; i < data.length; i += 4, j++) flags[j] = snapFlag(data[i]);
     return flags;
   }
 }
@@ -185,10 +190,10 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
 
   // organic base grain over the whole city
   for (let i = 0; i < 26000; i++) {
-    pc.globalAlpha = 0.05 + Math.random() * 0.09;
-    pc.fillStyle = Math.random() < 0.5 ? '#2b2a26' : '#4b4941';
-    const s = 6 + Math.random() * 34;
-    pc.fillRect(Math.random() * TEX_SIZE, Math.random() * TEX_SIZE, s, s);
+    pc.globalAlpha = rng.float(0.05, 0.14);
+    pc.fillStyle = rng.chance(0.5) ? '#2b2a26' : '#4b4941';
+    const s = rng.float(6, 40);
+    pc.fillRect(rng.float(0, TEX_SIZE), rng.float(0, TEX_SIZE), s, s);
   }
   pc.globalAlpha = 1;
 
@@ -199,13 +204,13 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
       painter.rect(cx, cz, w, d, '#3c5a33', FLAG.PARK);
       // meadow mottling + gravel paths
       for (let i = 0; i < 900; i++) {
-        pc.globalAlpha = 0.1 + Math.random() * 0.16;
-        pc.fillStyle = Math.random() < 0.5 ? '#2f4a29' : '#4d6d3c';
+        pc.globalAlpha = rng.float(0.1, 0.26);
+        pc.fillStyle = rng.chance(0.5) ? '#2f4a29' : '#4d6d3c';
         pc.fillRect(
-          painter.px(cx - w / 2 + Math.random() * w),
-          painter.px(cz - d / 2 + Math.random() * d),
-          8 + Math.random() * 26,
-          8 + Math.random() * 26,
+          painter.px(cx - w / 2 + rng.float(0, w)),
+          painter.px(cz - d / 2 + rng.float(0, d)),
+          rng.float(8, 34),
+          rng.float(8, 34),
         );
       }
       pc.globalAlpha = 1;
@@ -267,12 +272,12 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
 
   /* ---------- 2. reserve landmark footprints ---------- */
   const reserve = [
-    [-108, 176, 74, 40], // Petrov cathedral
-    [-268, 44, 92, 92], // Špilberk hill
+    [-108, 176, 110, 110], // Petrov cathedral and terraced mound
+    [-268, 44, 158, 158], // Špilberk hill
     [-18, 44, 26, 20], // Old town hall
     [112, -172, 62, 40], // Janáček theatre
     [104, -66, 40, 26], // Mahen theatre
-    [22, 286, 140, 34], // station hall
+    [22, 319, 140, 86], // station hall, platforms, canopies and rails
     [0, -52, 16, 16], // astronomical clock area
   ];
   for (const [x, z, w, d] of reserve) painter.rect(x, z, w, d, 'rgba(0,0,0,0)', FLAG.RESERVED);
