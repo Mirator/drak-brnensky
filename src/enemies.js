@@ -960,10 +960,11 @@ export class EnemyManager {
       }
     } else {
       const dir = _v2.copy(player.centre).sub(origin);
-      // lead the target a little
-      dir.addScaledVector(player.vel, 0.22).normalize();
+      const projectileSpeed = 42;
+      const flightTime = dir.length() / projectileSpeed;
+      dir.addScaledVector(player.vel, flightTime).normalize();
       this.onShoot && this.onShoot(e, origin, dir, {
-        color: 0xff8a3a, speed: 42, damage: e.damage, radius: 0.5, scale: 1.5, splash: 2.2, trail: 4,
+        color: 0xff8a3a, speed: projectileSpeed, damage: e.damage, radius: 0.5, scale: 1.5, splash: 2.2, trail: 4,
       });
     }
     this.vfx.burst(origin, 0xff7a2a, 10, 5, { size: 0.3, life: 0.35, drag: 4 });
