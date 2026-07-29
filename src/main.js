@@ -823,15 +823,15 @@ window.__brno = {
   }),
   /** Render one frame and return a PNG data URL (for visual checks). */
   shot(w = 1280, h = 720) {
-    const oldW = renderer.domElement.width;
-    const oldH = renderer.domElement.height;
+    const oldSize = renderer.getSize(new THREE.Vector2());
+    const oldAspect = camera.aspect;
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     renderer.render(scene, camera);
     const url = renderer.domElement.toDataURL('image/png');
-    renderer.setSize(oldW, oldH, false);
-    camera.aspect = oldW / oldH;
+    renderer.setSize(oldSize.x, oldSize.y, false);
+    camera.aspect = oldAspect;
     camera.updateProjectionMatrix();
     return url;
   },
