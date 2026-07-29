@@ -1,6 +1,12 @@
 /**
  * Keyboard + pointer-lock mouse input.
  */
+export function isFormControl(target) {
+  return !!target
+    && typeof target.matches === 'function'
+    && (target.matches('input, button, select, textarea') || target.isContentEditable);
+}
+
 export class Input {
   constructor(canvas) {
     this.canvas = canvas;
@@ -13,13 +19,14 @@ export class Input {
 
     addEventListener('keydown', (e) => {
       if (e.repeat) return;
+      if (isFormControl(e.target)) return;
       const c = e.code;
       this.keys.add(c);
       this._pressedOnce.add(c);
       if (['Space', 'ShiftLeft', 'ControlLeft', 'KeyR', 'KeyE', 'KeyF', 'Tab'].includes(c)) e.preventDefault();
     });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
-    addEventListener('blur', () => { this.keys.clear(); this.mouse.left = this.mouse.right = false; });
+    addEventListener('blur', () => this.reset());
 
     canvas.addEventListener('mousedown', (e) => {
       if (!this.locked) return;
@@ -41,7 +48,10 @@ export class Input {
 
     document.addEventListener('pointerlockchange', () => {
       this.locked = document.pointerLockElement === canvas;
-      if (!this.locked) this.onUnlock && this.onUnlock();
+      if (!this.locked) {
+        this.reset();
+        this.onUnlock && this.onUnlock();
+      }
     });
   }
 
@@ -75,6 +85,16 @@ export class Input {
   }
   releaseLock() {
     if (this.locked) document.exitPointerLock();
+  }
+
+  reset() {
+    this.keys.clear();
+    this._pressedOnce.clear();
+    this.mouse.dx = 0;
+    this.mouse.dy = 0;
+    this.mouse.left = false;
+    this.mouse.right = false;
+    this.mouse.wheel = 0;
   }
 
   down(code) { return this.keys.has(code); }

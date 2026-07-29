@@ -8,6 +8,7 @@ export class Audio {
     this.enabled = true;
     this.musicGain = null;
     this._noise = null;
+    this.volume = 0.55;
   }
 
   init() {
@@ -16,7 +17,7 @@ export class Audio {
     if (!AC) { this.enabled = false; return; }
     this.ctx = new AC();
     this.master = this.ctx.createGain();
-    this.master.gain.value = 0.55;
+    this.master.gain.value = this.volume;
     const comp = this.ctx.createDynamicsCompressor();
     comp.threshold.value = -14;
     comp.ratio.value = 6;
@@ -348,6 +349,7 @@ export class Audio {
   }
 
   setVolume(v) {
-    if (this.master) this.master.gain.value = v;
+    this.volume = Math.max(0, Math.min(1, Number(v) || 0));
+    if (this.master) this.master.gain.value = this.volume;
   }
 }

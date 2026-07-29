@@ -9,16 +9,18 @@ import { EnemyManager, ENEMY_TYPES } from './enemies.js';
 import { Hud } from './hud.js';
 import { Audio } from './audio.js';
 import { Rng } from './rng.js';
+import { bindSettings } from './settings.js';
 
 /* ==================================================================
    DRAK BRNĚNSKÝ — third-person action, central Brno
    ================================================================== */
 
 let lastTime = performance.now();
-const rng = new Rng(90210);
+const GAMEPLAY_SEED = 90210;
+let gameplayRng = new Rng(GAMEPLAY_SEED);
 
 const state = {
-  mode: 'loading', // loading | menu | playing | paused | dead
+  mode: 'loading', // loading | menu | playing | paused | dead | error
   score: 0,
   wave: 0,
   waveState: 'idle', // idle | active | cleared
@@ -33,17 +35,7 @@ const state = {
 
 /* ---------------- renderer & scene ---------------- */
 const canvas = document.getElementById('game');
-const renderer = new THREE.WebGLRenderer({
-  canvas,
-  antialias: true,
-  powerPreference: 'high-performance',
-});
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
-renderer.setSize(innerWidth, innerHeight);
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.08;
+let renderer = null;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x2b2c38, 0.0021);
@@ -163,8 +155,7 @@ function damageRift(rift, amount) {
     state.score += 500;
     hud.toast('TRHLINA UZAVŘENA', 'good');
     rift.visual.dispose();
-    // the collider stays in the grid; make it harmless
-    rift.collider.top = rift.collider.bottom;
+    collision.remove(rift.collider);
     const i = rifts.indexOf(rift);
     if (i >= 0) rifts.splice(i, 1);
   }
@@ -185,7 +176,7 @@ function spawnPickup(kind, x, y, z) {
   const v = vfx.makePickupVisual(colour);
   v.group.position.set(x, y, z);
   scene.add(v.group);
-  pickups.push({ kind, visual: v, pos: v.group.position, t: Math.random() * 6, life: 42 });
+  pickups.push({ kind, visual: v, pos: v.group.position, t: gameplayRng.float(0, 6), life: 42 });
 }
 
 function collectPickup(p, index) {
@@ -256,8 +247,8 @@ function startWave(n) {
   for (const key of def.places) {
     const place = PLACES[key];
     // rifts need room around them: the player has to be able to circle one
-    const p = world.randomOpenPoint(place.x, place.z, 24, rng, 5)
-      || world.randomOpenPoint(place.x, place.z, 34, rng, 3)
+    const p = world.randomOpenPoint(place.x, place.z, 24, gameplayRng, 5)
+      || world.randomOpenPoint(place.x, place.z, 34, gameplayRng, 3)
       || new THREE.Vector3(place.x, 0, place.z);
     spawnRift(p.x, p.z, def.hp * scale);
   }
@@ -289,7 +280,7 @@ function waveCleared() {
   audio.waveHorn();
   // a couple of care packages by the player
   for (let i = 0; i < 2; i++) {
-    const p = world.randomOpenPoint(player.pos.x, player.pos.z, 14, rng);
+    const p = world.randomOpenPoint(player.pos.x, player.pos.z, 14, gameplayRng);
     if (p) spawnPickup(i === 0 ? 'health' : 'ammo', p.x, p.y, p.z);
   }
 }
@@ -313,10 +304,10 @@ function updateWaves(dt) {
   for (const rift of rifts) {
     rift.spawnTimer -= dt;
     if (rift.spawnTimer > 0) continue;
-    rift.spawnTimer = def.interval * (0.8 + Math.random() * 0.5);
+    rift.spawnTimer = def.interval * gameplayRng.float(0.8, 1.3);
     if (enemies.aliveCount >= def.cap) continue;
-    const typeId = def.types[Math.floor(Math.random() * def.types.length)];
-    const p = world.randomOpenPoint(rift.pos.x, rift.pos.z, 9, rng)
+    const typeId = gameplayRng.pick(def.types);
+    const p = world.randomOpenPoint(rift.pos.x, rift.pos.z, 9, gameplayRng)
       || new THREE.Vector3(rift.pos.x + 4, 0, rift.pos.z);
     const e = enemies.spawn(typeId, p, {
       hpScale: 1 + Math.max(0, state.wave - WAVES.length) * 0.3,
@@ -357,6 +348,37 @@ function updateWaves(dt) {
 const loadEl = document.getElementById('loading');
 const loadFill = document.getElementById('load-fill');
 const loadStep = document.getElementById('load-step');
+const loadError = document.getElementById('load-error');
+
+function createRenderer() {
+  const instance = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    powerPreference: 'high-performance',
+  });
+  instance.setPixelRatio(Math.min(devicePixelRatio, 1.75));
+  instance.setSize(innerWidth, innerHeight);
+  instance.shadowMap.enabled = true;
+  instance.shadowMap.type = THREE.PCFSoftShadowMap;
+  instance.toneMapping = THREE.ACESFilmicToneMapping;
+  instance.toneMappingExposure = 1.08;
+  return instance;
+}
+
+function showBootError(error) {
+  console.error('Game initialization failed', error);
+  state.mode = 'error';
+  loadEl.classList.add('error');
+  loadEl.classList.remove('done');
+  loadError.classList.remove('hidden');
+  document.getElementById('btn-reload').onclick = () => location.reload();
+}
+
+addEventListener('unhandledrejection', (event) => {
+  if (state.mode !== 'loading') return;
+  event.preventDefault();
+  showBootError(event.reason);
+});
 
 // A timer-based yield (not rAF) so loading also completes in a background tab.
 const yieldFrame = () => new Promise((r) => setTimeout(r, 16));
@@ -368,32 +390,38 @@ async function step(pct, label) {
 }
 
 async function boot() {
-  await step(8, 'kolize a fyzika');
-  vfx = new VFX(scene);
+  try {
+    bindSettings(document, input, audio);
+    renderer = createRenderer();
+    await step(8, 'kolize a fyzika');
+    vfx = new VFX(scene);
 
-  await step(20, 'ulice, tramvaje, fasády');
-  world = buildCity(scene, collision);
+    await step(20, 'ulice, tramvaje, fasády');
+    world = buildCity(scene, collision);
 
-  await step(62, 'Petrov, Špilberk, radnice');
-  player = new Player(scene, collision, { x: 16, z: -4 });
-  chase = new ChaseCamera(camera, collision);
-  enemies = new EnemyManager(scene, collision, vfx);
+    await step(62, 'Petrov, Špilberk, radnice');
+    player = new Player(scene, collision, { x: 16, z: -4, rng: gameplayRng });
+    chase = new ChaseCamera(camera, collision);
+    enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
 
-  await step(78, 'dračí potomstvo');
-  hud = new Hud(world.minimap);
-  wireGameplay();
+    await step(78, 'dračí potomstvo');
+    hud = new Hud(world.minimap);
+    wireGameplay();
 
-  await step(92, 'osvětlení a stíny');
-  // prime the shadow camera and compile shaders
-  sun.target.position.copy(player.pos);
-  renderer.compile(scene, camera);
+    await step(92, 'osvětlení a stíny');
+    // prime the shadow camera and compile shaders
+    sun.target.position.copy(player.pos);
+    renderer.compile(scene, camera);
 
-  await step(100, 'hotovo');
-  loadEl.classList.add('done');
-  setTimeout(() => loadEl.remove(), 600);
-  state.mode = 'menu';
-  lastTime = performance.now();
-  renderer.setAnimationLoop(tick);
+    await step(100, 'hotovo');
+    loadEl.classList.add('done');
+    setTimeout(() => loadEl.remove(), 600);
+    state.mode = 'menu';
+    lastTime = performance.now();
+    renderer.setAnimationLoop(tick);
+  } catch (error) {
+    showBootError(error);
+  }
 }
 
 /* ==================================================================
@@ -411,7 +439,7 @@ function wireGameplay() {
       queueToast('Brno vydrželo. Jak dlouho vydržíš ty?', 'sub', 1.2);
       return;
     }
-    const roll = Math.random();
+    const roll = gameplayRng.next();
     if (roll < 0.20) spawnPickup('health', e.pos.x, e.pos.y, e.pos.z);
     else if (roll < 0.42) spawnPickup('ammo', e.pos.x, e.pos.y, e.pos.z);
   };
@@ -511,13 +539,14 @@ const goEl = document.getElementById('gameover');
 const resumeHintEl = document.getElementById('resume-hint');
 
 function startGame() {
+  gameplayRng.reset(GAMEPLAY_SEED);
   audio.init();
   audio.resume();
   // reset
   enemies.clear();
   for (const r of [...rifts]) {
     r.visual.dispose();
-    r.collider.top = r.collider.bottom;
+    collision.remove(r.collider);
   }
   rifts.length = 0;
   for (const p of pickups) scene.remove(p.visual.group);
@@ -618,6 +647,7 @@ addEventListener('keydown', (e) => {
 });
 
 function resizeRenderer() {
+  if (!renderer) return;
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
@@ -757,7 +787,7 @@ function stepGame(dt, frozen = false) {
     enemies.update(dt, {
       player,
       camera,
-      findOpenPointNear: (x, z, r) => world.randomOpenPoint(x, z, r, rng),
+      findOpenPointNear: (x, z, r) => world.randomOpenPoint(x, z, r, gameplayRng),
     });
     updateWaves(dt);
   }

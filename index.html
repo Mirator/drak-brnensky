@@ -76,6 +76,24 @@
         <div><kbd>ESC</kbd><span>pauza</span></div>
       </div>
 
+      <div class="settings-panel" aria-label="Nastavení">
+        <div class="settings-title">NASTAVENÍ</div>
+        <label class="setting-row">
+          <span>Citlivost myši</span>
+          <input data-setting="sensitivity" type="range" min="0.5" max="2" step="0.05" />
+          <output data-setting-value="sensitivity"></output>
+        </label>
+        <label class="setting-row setting-check">
+          <span>Obrátit osu Y</span>
+          <input data-setting="invertY" type="checkbox" />
+        </label>
+        <label class="setting-row">
+          <span>Hlasitost</span>
+          <input data-setting="volume" type="range" min="0" max="1" step="0.05" />
+          <output data-setting-value="volume"></output>
+        </label>
+      </div>
+
       <button id="btn-play">HRÁT</button>
       <div class="menu-foot">Klikni pro uzamčení kurzoru · doporučen Chrome / Edge</div>
     </div>
@@ -86,6 +104,23 @@
     <div class="overlay-card">
       <h2>PAUZA</h2>
       <div class="pause-stats" id="pause-stats"></div>
+      <div class="settings-panel pause-settings" aria-label="Nastavení">
+        <div class="settings-title">NASTAVENÍ</div>
+        <label class="setting-row">
+          <span>Citlivost myši</span>
+          <input data-setting="sensitivity" type="range" min="0.5" max="2" step="0.05" />
+          <output data-setting-value="sensitivity"></output>
+        </label>
+        <label class="setting-row setting-check">
+          <span>Obrátit osu Y</span>
+          <input data-setting="invertY" type="checkbox" />
+        </label>
+        <label class="setting-row">
+          <span>Hlasitost</span>
+          <input data-setting="volume" type="range" min="0" max="1" step="0.05" />
+          <output data-setting-value="volume"></output>
+        </label>
+      </div>
       <div id="resume-hint" aria-live="polite"></div>
       <button id="btn-resume">POKRAČOVAT</button>
       <button id="btn-restart" class="ghost">RESTART</button>
@@ -106,6 +141,10 @@
       <div class="load-title">STAVÍME BRNO…</div>
       <div class="load-bar"><div id="load-fill"></div></div>
       <div class="load-step" id="load-step">inicializace</div>
+      <div id="load-error" class="load-error hidden" role="alert">
+        <p>Hru se nepodařilo spustit. Zkontroluj podporu WebGL nebo obnov stránku.</p>
+        <button id="btn-reload">NAČÍST ZNOVU</button>
+      </div>
     </div>
   </div>
 

@@ -348,6 +348,58 @@ kbd {
   color: var(--paper);
 }
 
+.settings-panel {
+  display: grid;
+  gap: 9px;
+  margin: -10px 0 22px;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settings-title {
+  color: var(--amber-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.24em;
+}
+
+.setting-row {
+  display: grid;
+  grid-template-columns: 150px minmax(120px, 1fr) 48px;
+  align-items: center;
+  gap: 12px;
+  color: rgba(242, 237, 228, 0.7);
+  font-size: 12px;
+}
+
+.setting-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--amber);
+  cursor: pointer;
+}
+
+.setting-row output {
+  color: var(--paper);
+  font-family: var(--mono);
+  font-size: 11px;
+  text-align: right;
+}
+
+.setting-check input {
+  grid-column: 2 / 4;
+  justify-self: end;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--amber);
+  cursor: pointer;
+}
+
+.pause-settings {
+  width: min(420px, 78vw);
+  margin: -12px auto 24px;
+  text-align: left;
+}
+
 button {
   font-family: var(--font);
   font-size: 17px;
@@ -422,6 +474,22 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.07); color: #fff; box-sha
 #load-fill { height: 100%; width: 0%; background: var(--amber); transition: width 0.25s; }
 .load-step { margin-top: 10px; font-family: var(--mono); font-size: 11px; color: rgba(242, 237, 228, 0.4); }
 
+#loading.error .load-title { color: var(--red); }
+#loading.error .load-bar,
+#loading.error .load-step { display: none; }
+
+.load-error p {
+  margin: 18px 0;
+  color: rgba(242, 237, 228, 0.72);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.load-error button {
+  padding: 12px 24px;
+  font-size: 13px;
+}
+
 @media (max-width: 760px) {
   #menu {
     place-items: start center;
@@ -445,9 +513,19 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.07); color: #fff; box-sha
   }
 
   .controls-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 5px;
     margin-bottom: 16px;
     padding: 10px 0;
+  }
+
+  .settings-panel {
+    margin-top: -6px;
+  }
+
+  .setting-row {
+    grid-template-columns: 112px minmax(90px, 1fr) 42px;
+    gap: 8px;
   }
 
   .menu-foot { margin-top: 10px; }
