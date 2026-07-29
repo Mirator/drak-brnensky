@@ -396,7 +396,10 @@ function wireGameplay() {
     state.score += e.type.score;
     audio.kill();
     if (e.typeId === 'boss') {
-      onVictory();
+      boss = null;
+      hud.hideBoss();
+      hud.toast('DRAK PADL — VLNY POKRAČUJÍ', 'big');
+      queueToast('Brno vydrželo. Jak dlouho vydržíš ty?', 'sub', 1.2);
       return;
     }
     const roll = Math.random();
