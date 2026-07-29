@@ -111,7 +111,7 @@ function makeHouse(rng, { eaves, commercial, core, shabbyChance, shopChance }) {
     pitch: rng.float(0.72, 0.95), // tan of the roof angle (36-44 deg)
     corniceRich: rng.chance(0.55),
     dormers: rng.int(0, 3),
-    chimneys: rng.int(1, 4),
+    chimneys: rng.int(1, 3),
   };
 }
 

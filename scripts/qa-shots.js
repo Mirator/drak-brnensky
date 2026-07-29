@@ -119,9 +119,53 @@ async function applyView(view) {
   // free camera — placed after a settle so the world (trams, animation) is live
   settle(8);
   b.camera.fov = view.fov;
-  b.camera.position.set(...view.eye);
-  b.camera.lookAt(...view.target);
+  placeFreeCamera(view);
   b.camera.updateProjectionMatrix();
+}
+
+/**
+ * Put the eye where it can actually see the target.
+ *
+ * The hardcoded eye positions were authored against the original city. Once the
+ * landmarks and the building stock were rebuilt, several of them ended up
+ * *inside* a wall, and the captures came back as a black frame with a sliver of
+ * sky — which reads exactly like a render bug and is not one.
+ *
+ * So: march from the target towards the requested eye and stop short of the
+ * first solid, then lift the eye clear of the ground. The framing degrades
+ * gracefully as the city changes instead of silently ending up indoors.
+ */
+function placeFreeCamera(view) {
+  const b = g();
+  const T = b.THREE;
+  const target = new T.Vector3(...view.target);
+  const eye = new T.Vector3(...view.eye);
+  const toEye = new T.Vector3().subVectors(eye, target);
+  const want = toEye.length();
+  if (want < 0.001) {
+    b.camera.position.copy(eye);
+    b.camera.lookAt(target);
+    return;
+  }
+  toEye.divideScalar(want);
+
+  let dist = want;
+  const collision = b.collision || null;
+  const hit = collision && collision.raycastHit
+    ? collision.raycastHit(target, toEye, want)
+    : null;
+  if (hit && hit.hit) {
+    // stop short of whatever is in the way, and never end up on top of it
+    dist = Math.max(6, hit.t * 0.85);
+  }
+
+  eye.copy(target).addScaledVector(toEye, dist);
+  if (collision && collision.groundHeight) {
+    const ground = collision.groundHeight(eye.x, eye.z, 40, 2) || 0;
+    if (eye.y < ground + 2.5) eye.y = ground + 2.5;
+  }
+  b.camera.position.copy(eye);
+  b.camera.lookAt(target);
 }
 
 /* ---------------- capture ---------------- */

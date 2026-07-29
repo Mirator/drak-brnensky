@@ -1,5 +1,5 @@
-import { getMaterial } from '../materials.js';
 import { label } from './mesh.js';
+import { TIER } from './chunks.js';
 
 /**
  * The roofscape.
@@ -7,19 +7,26 @@ import { label } from './mesh.js';
  * Central European old-town roofs are dense: chimneys everywhere, dormers,
  * roof windows, ridge tiles, valleys where a courtyard wing meets the front
  * house, firewalls stepping over the party walls, aerials, satellite dishes,
- * gutters and a downpipe at every party wall. Everything here is merged
- * into the buckets the houses already use plus three of its own (brick,
- * metal, glass), so the whole roofscape costs three extra draw calls.
+ * gutters and a downpipe at every party wall.
+ *
+ * Every material used here is one the houses already built, so none of it
+ * adds a texture upload. What it does add is triangles — on the order of a
+ * hundred per house — so it is split by how far away it still reads:
+ * chimneys, ridges and dormers make the skyline and go in the silhouette
+ * tier, while gutters, downpipes, aerials, dishes, roof windows and rooftop
+ * plant go in the distance-culled detail tier.
  */
 export class Roofscape {
   constructor(rng, houseMats) {
     this.rng = rng;
+    // every material here is one the houses already built, so the whole
+    // roofscape adds detail without adding a draw call or a texture upload
     this.M = {
-      brick: getMaterial('stone', { base: '#8a5546', mortar: '#6c4a41', scale: 0.7 }),
+      brick: houseMats.brick,
       metal: houseMats.metal,
       cornice: houseMats.cornice,
       clay: houseMats.roofClay,
-      glass: getMaterial('paneGlass', { seed: 1501, panesX: 2, panesY: 2 }),
+      glass: houseMats.glass,
     };
     label(this.M);
     this.chimneys = 0;
@@ -33,9 +40,11 @@ export class Roofscape {
   }
 
   /** Everything that sits on a pitched roof. */
-  add(batches, mass, { alongX, ridgeH, ow, od, skipPlusX, skipMinusX, isWing }) {
+  add(chunks, mass, { alongX, ridgeH, ow, od, skipPlusX, skipMinusX, isWing }) {
     const rng = this.rng;
     const { x, z, rot, eaves } = mass;
+    const S = (m) => chunks.get(m, x, z, TIER.SILHOUETTE);
+    const D = (m) => chunks.get(m, x, z, TIER.DETAIL);
     // span = across the pitch, run = along the ridge
     const span = alongX ? od : ow;
     const run = alongX ? ow : od;
@@ -45,7 +54,7 @@ export class Roofscape {
       : Roofscape.place(mass, across, alongRidge));
 
     /* ---- ridge tiles ---- */
-    const ridge = batches.get(this.M.clay);
+    const ridge = S(this.M.clay);
     {
       const [rx, rz] = at(0, 0);
       ridge.box(rx, eaves + ridgeH - 0.1, rz,
@@ -56,7 +65,7 @@ export class Roofscape {
 
     /* ---- chimneys, clustered near the ridge as they really are ---- */
     const n = mass.chimneys ?? 2;
-    const brick = batches.get(this.M.brick);
+    const brick = S(this.M.brick);
     for (let i = 0; i < n; i++) {
       const alongRidge = rng.float(-run / 2 + 0.9, run / 2 - 0.9);
       const across = rng.float(-span * 0.16, span * 0.16);
@@ -71,7 +80,7 @@ export class Roofscape {
       brick.box(cx, baseY + h, cz, cw + 0.16, 0.14, cd + 0.16, rot,
         () => [1.4, 0.4, 0, 0], [false, false, false, false, false, true]);
       if (rng.chance(0.45)) {
-        const pots = batches.get(this.M.metal);
+        const pots = S(this.M.metal);
         pots.box(cx, baseY + h + 0.14, cz, cw * 0.42, rng.float(0.24, 0.44), cd * 0.5, rot,
           () => [0.6, 0.6, 0, 0], [false, false, false, false, false, true]);
       }
@@ -94,14 +103,14 @@ export class Roofscape {
         const dw = rng.float(1.15, 1.6);
         const dh = rng.float(1.25, 1.7);
         // cheeks + face
-        batches.get(this.M.cornice).box(dx, y, dz, dw, dh, 1.5, drot,
+        S(this.M.cornice).box(dx, y, dz, dw, dh, 1.5, drot,
           (f) => [(f === 0 || f === 1 ? 1.5 : dw) / 1.2, dh / 1.2, 0, 0],
           [false, false, true, false, true, true]);
         // its own little pitched roof
-        batches.get(this.M.clay).gable(dx, y + dh, dz, dw + 0.24, 1.7, 0.55, drot, 1.4);
+        S(this.M.clay).gable(dx, y + dh, dz, dw + 0.24, 1.7, 0.55, drot, 1.4);
         // glazing, slightly recessed into the face
         const fc = Math.cos(drot), fs = Math.sin(drot);
-        batches.get(this.M.glass).quad(
+        S(this.M.glass).quad(
           dx + fc * dw * 0.34 - fs * 0.78, y + 0.22, dz - fs * dw * 0.34 - fc * 0.78,
           -fc * dw * 0.68, 0, fs * dw * 0.68,
           0, dh - 0.42, 0, 1, 1,
@@ -111,12 +120,12 @@ export class Roofscape {
     }
 
     /* ---- roof windows: flush dark panes lying in the pitch ---- */
-    if (rng.chance(0.42)) {
+    if (rng.chance(0.2)) {
       const across = (rng.chance(0.6) ? -1 : 1) * span * 0.34;
       const alongRidge = rng.float(-run / 2 + 1.2, run / 2 - 1.2);
       const [wx, wz] = at(alongRidge, across);
       const y = surfaceY(across) + 0.04;
-      const g = batches.get(this.M.glass);
+      const g = D(this.M.glass);
       const c = Math.cos(rot), s = Math.sin(rot);
       const uX = alongX ? [c, 0, -s] : [s, 0, c];
       const uZ = alongX ? [s, 0, c] : [c, 0, -s];
@@ -131,20 +140,20 @@ export class Roofscape {
     }
 
     /* ---- aerials and satellite dishes ---- */
-    if (rng.chance(0.3)) {
+    if (rng.chance(0.16)) {
       const [ax, az] = at(rng.float(-run / 3, run / 3), rng.float(-0.4, 0.4));
-      const m = batches.get(this.M.metal);
+      const m = D(this.M.metal);
       const top = eaves + ridgeH;
       m.box(ax, top, az, 0.05, rng.float(1.4, 2.6), 0.05, rot, () => [0.4, 3, 0, 0]);
-      for (let k = 0; k < 3; k++) {
-        m.box(ax, top + 0.9 + k * 0.34, az, 0.9 - k * 0.2, 0.04, 0.04, rot, () => [2, 0.3, 0, 0]);
+      for (let k = 0; k < 2; k++) {
+        m.box(ax, top + 0.9 + k * 0.4, az, 0.9 - k * 0.24, 0.04, 0.04, rot, () => [2, 0.3, 0, 0]);
       }
     }
-    if (rng.chance(0.22)) {
+    if (rng.chance(0.12)) {
       const acrossSign = rng.chance(0.5) ? -1 : 1;
       const [sx, sz] = at(rng.float(-run / 3, run / 3), acrossSign * span * 0.3);
       const y = surfaceY(acrossSign * span * 0.3);
-      const m = batches.get(this.M.metal);
+      const m = D(this.M.metal);
       m.box(sx, y, sz, 0.07, 0.5, 0.07, rot, () => [0.3, 1, 0, 0]);
       m.box(sx, y + 0.5, sz, 0.7, 0.66, 0.12, rot + rng.float(-0.6, 0.6),
         () => [1, 1, 0, 0], [false, false, false, false, false, true]);
@@ -152,11 +161,11 @@ export class Roofscape {
   }
 
   /** Rooftop clutter for the flat-roofed outer blocks. */
-  addFlat(batches, mass) {
+  addFlat(chunks, mass) {
     const rng = this.rng;
     const { x, z, rot, eaves, w, d } = mass;
-    const m = batches.get(this.M.metal);
-    const n = rng.int(1, 3);
+    const m = chunks.get(this.M.metal, x, z, TIER.DETAIL);
+    const n = rng.int(1, 2);
     for (let i = 0; i < n; i++) {
       const lx = rng.float(-w / 2 + 1.4, w / 2 - 1.4);
       const lz = rng.float(-d / 2 + 1.4, d / 2 - 1.4);
@@ -174,9 +183,9 @@ export class Roofscape {
   }
 
   /** Gutter along the eaves and a downpipe at each party wall. */
-  plumbing(batches, mass, { skipPlusX, skipMinusX }) {
+  plumbing(chunks, mass, { skipPlusX, skipMinusX }) {
     const { x, z, rot, eaves, w, d } = mass;
-    const m = batches.get(this.M.metal);
+    const m = chunks.get(this.M.metal, x, z, TIER.DETAIL);
     const c = Math.cos(rot), s = Math.sin(rot);
     for (const sgn of [-1, 1]) {
       const gx = x - s * sgn * (d / 2 + 0.22);
@@ -198,7 +207,4 @@ export class Roofscape {
     }
   }
 
-  finish() {
-    return { meshes: 0, chimneys: this.chimneys, dormers: this.dormers };
-  }
 }

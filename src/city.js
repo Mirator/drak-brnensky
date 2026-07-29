@@ -8,6 +8,7 @@ import {
   FlagGrid, Painter, FALLBACK_FOOTPRINTS,
 } from './city/layout.js';
 import { paintPlan, buildGround } from './city/plan.js';
+import { Chunks, trackCamera } from './city/chunks.js';
 import { generatePlots } from './city/blocks.js';
 import { buildHouses } from './city/buildings.js';
 import { buildProps } from './city/props.js';
@@ -59,6 +60,13 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
   const cityGroup = new THREE.Group();
   cityGroup.name = 'city';
 
+  /* Spatial chunk grid. Everything heavier than the facade walls is merged
+   * per material *per chunk* so frustum culling works at all, and the fine
+   * tier is additionally distance-culled and excluded from the shadow
+   * cascades — see src/city/chunks.js for why that is the biggest lever
+   * available from this file. */
+  const chunks = new Chunks({ cells: 6, detailRadius: 150 });
+
   /* ---------- 1. paint the ground plan ---------- */
   const { puddles } = paintPlan(painter, rng);
 
@@ -85,9 +93,12 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
 
   /* ---------- 4. ground relief ---------- */
   const ground = buildGround(cityGroup, collision, painter, rng, { puddles });
+  const cameraAt = trackCamera(ground.plane);
 
   /* ---------- 5. houses, roofscape, shopfronts ---------- */
-  const houses = buildHouses(cityGroup, collision, plots, rng, { breakables, seed: rngSeed });
+  const houses = buildHouses(cityGroup, collision, plots, rng, {
+    breakables, seed: rngSeed, chunks,
+  });
 
   /* ---------- 6. landmarks ---------- */
   const stoneMat = getMaterial('stone', { base: '#8d8577', mortar: '#6e675c', scale: 2 });
@@ -95,14 +106,18 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
   const landmarkInfo = landmarksModule.buildLandmarks(cityGroup, collision, { stoneMat, roofMat, rng });
 
   /* ---------- 7. vegetation and street life ---------- */
-  const vegetation = buildVegetation(cityGroup, collision, { rng });
+  const vegetation = buildVegetation(cityGroup, collision, { rng, chunks });
   const props = buildProps(cityGroup, collision, {
-    rng, flagAt, plots, seed: rngSeed, breakables,
+    rng, flagAt, plots, seed: rngSeed, breakables, chunks,
   });
 
   /* ---------- 8. trams ---------- */
   const tramInfo = buildTrams(cityGroup);
   const trams = tramInfo.trams;
+
+  /* ---------- 8b. flush the chunked geometry ---------- */
+  const chunkMeshes = chunks.finish(cityGroup);
+  chunks.update(0, 0);
 
   /* ---------- 9. world bounds ---------- */
   const edge = HALF - 26;
@@ -133,6 +148,23 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
   const rigidCandidate = collision.rigid || collision.rigidBody || collision.physics || null;
   const registeredNow = breakables.register(rigidCandidate);
 
+  /* Triangle accounting, split the way the cost actually lands: with three
+   * shadow cascades a caster triangle is submitted four times a frame and a
+   * non-caster once, so `shadowTriangles` is the number that matters. */
+  let sceneTriangles = 0;
+  let shadowTriangles = 0;
+  let meshCount = 0;
+  cityGroup.traverse((o) => {
+    if (!o.isMesh) return;
+    const g = o.geometry;
+    if (!g || !g.attributes || !g.attributes.position) return;
+    const per = g.index ? g.index.count / 3 : g.attributes.position.count / 3;
+    const n = per * (o.isInstancedMesh ? o.count : 1);
+    sceneTriangles += n;
+    if (o.castShadow) shadowTriangles += n;
+    meshCount++;
+  });
+
   const stats = {
     buildings: buildings.length,
     plots: plots.length,
@@ -142,8 +174,15 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
     dormers: houses.dormers,
     facadeVariants: houses.facadeVariants,
     trees: vegetation.trees,
-    drawCalls: ground.meshes + houses.meshes + vegetation.meshes + props.meshes
-      + tramInfo.meshes,
+    vegetation,
+    chunkCells: chunks.cells * chunks.cells,
+    detailRadius: chunks.detailRadius,
+    chunkMeshes,
+    detailMeshes: chunks.detailMeshes.length,
+    meshes: meshCount,
+    sceneTriangles: Math.round(sceneTriangles),
+    shadowTriangles: Math.round(shadowTriangles),
+    drawCalls: meshCount,
     colliders: collision.boxes.length,
     breakables: breakables.count,
     breakableKinds: breakables.summary(),
@@ -195,9 +234,22 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
       }
       return null;
     },
+    /** Live LOD counters, for the performance engineer's overlay. */
+    lodStats() {
+      let visible = 0;
+      for (const d of chunks.detailMeshes) if (d.mesh.visible) visible++;
+      return {
+        detailMeshes: chunks.detailMeshes.length,
+        detailVisible: visible,
+        cameraTracked: cameraAt.seen,
+        cameraAt: [Math.round(cameraAt.x), Math.round(cameraAt.z)],
+      };
+    },
     update(dt, t) {
       for (const tr of trams) tr.update(dt);
       if (props.update) props.update(dt, t);
+      // one frame of latency by design: the camera is sampled during render
+      chunks.update(cameraAt.x, cameraAt.z);
     },
   };
 }

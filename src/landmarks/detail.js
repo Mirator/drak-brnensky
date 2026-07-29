@@ -347,11 +347,6 @@ function extrude(shape, depth, bevel = 0) {
   return g;
 }
 
-/** Scale a Vector2 outline about the origin. */
-function scaled(pts, sx, sy, dy = 0) {
-  return pts.map((p) => new THREE.Vector2(p.x * sx, p.y * sy + dy));
-}
-
 /* ==================================================================
    the reusable part library
    ================================================================== */
@@ -481,11 +476,10 @@ export function traceryWindow(w, h, opts = {}) {
     const hr = Math.min(w * 0.3, (h - lh - lw * 0.55) * 0.44);
     stone.push(circleRing(hr, bar * 0.8, depth * 0.7, 4)
       .translate(0, lh + lw * 0.6 + hr * 1.1, depth * 0.45));
-    const small = circleRing(hr * 0.5, bar * 0.7, depth * 0.6, 3, { seg: 10 });
     for (const s of [-1, 1]) {
-      stone.push(small.clone().translate(s * hr * 1.05, lh + lw * 0.55 + hr * 0.55, depth * 0.45));
+      stone.push(new THREE.BoxGeometry(bar * 0.9, hr * 0.9, depth * 0.6)
+        .rotateZ(s * 0.5).translate(s * hr * 0.95, lh + lw * 0.55 + hr * 0.5, depth * 0.45));
     }
-    small.dispose();
   }
   // the glazing is a single flat face turned to meet the viewer: at 480-odd
   // openings across the landmarks, an extruded slab here costs 20k triangles
@@ -574,7 +568,7 @@ export function pinnacle(h = 6, w = 1.1, opts = {}) {
   }
   cr.dispose();
   // finial
-  g.push(new THREE.SphereGeometry(w * 0.15, 6, 5).translate(0, h - h * 0.07, 0));
+  g.push(new THREE.SphereGeometry(w * 0.15, 5, 4).translate(0, h - h * 0.07, 0));
   g.push(new THREE.ConeGeometry(w * 0.1, h * 0.1, 4).translate(0, h - h * 0.02, 0));
   return mergeAll(g);
 }
@@ -587,15 +581,21 @@ export function merlon(w = 2.2, h = 1.5, d = 0.9) {
   return mergeAll(g);
 }
 
-/** Turned baluster — parapets, terrace balustrades, theatre attics. */
+/**
+ * Turned baluster — parapets, terrace balustrades, theatre attics.
+ *
+ * This part is stamped roughly three hundred times across the landmarks, so its
+ * profile is deliberately the shortest one that still reads as turned stone:
+ * a swelling foot, a waisted neck and a square cap. Every point added here
+ * costs ~600 triangles across the map.
+ */
 export function baluster(h = 1.0, r = 0.14) {
   const pts = [
-    [r * 1.5, 0], [r * 1.5, h * 0.06], [r * 0.95, h * 0.1], [r * 0.62, h * 0.2],
-    [r * 0.95, h * 0.3], [r * 1.0, h * 0.42], [r * 0.72, h * 0.56],
-    [r * 0.5, h * 0.68], [r * 0.55, h * 0.8], [r * 0.42, h * 0.88],
+    [r * 1.5, 0], [r * 1.5, h * 0.07], [r * 0.66, h * 0.2],
+    [r * 1.0, h * 0.4], [r * 0.52, h * 0.66], [r * 0.5, h * 0.86],
     [r * 1.5, h * 0.94], [r * 1.5, h],
   ].map(([x, y]) => new THREE.Vector2(Math.max(0.02, x), y));
-  return new THREE.LatheGeometry(pts, 7);
+  return new THREE.LatheGeometry(pts, 6);
 }
 
 /** Pierced quatrefoil parapet panel — the gothic alternative to balusters. */
@@ -1114,14 +1114,9 @@ export class Builder {
     return this._push(mat, g);
   }
 
-  /** A run of `n` shared parts along a straight line. */
-  run(mat, geo, x, y, z, dx, dz, n, o = {}) {
-    for (let i = 0; i < n; i++) this.place(mat, geo, x + dx * i, y, z + dz * i, o);
-  }
-
   /** Balustrade: capped rail on turned balusters, plus a matching plinth. */
   balustrade(x, y, z, len, o = {}) {
-    const { rotY = 0, h = 1.1, mat = this.M.stonePale, spacing = 0.62, solid = false } = o;
+    const { rotY = 0, h = 1.1, mat = this.M.stonePale, spacing = 0.82, solid = false } = o;
     const cos = Math.cos(rotY), sin = Math.sin(rotY);
     const t = this._tier;
     const band = (prof, w, d, yy) => {
@@ -1234,7 +1229,13 @@ export class Builder {
         box.union(merged.boundingBox);
         const mesh = new THREE.Mesh(merged, mat);
         mesh.name = `ornament-${name}-${mat.name || 'mat'}`;
-        mesh.castShadow = opts.castShadow !== false;
+        /* Ornament is deliberately excluded from the shadow casters. A crocket
+           casts a shadow a few pixels wide, but every shadow cascade re-renders
+           it, so ornament in the shadow pass costs its triangle count several
+           times over for detail nobody can see. The wall, roof and spire it sits
+           on are structural-tier and do cast, so the silhouette shadow is
+           unchanged. It still RECEIVES shadow, which is what makes carving read. */
+        mesh.castShadow = false;
         mesh.receiveShadow = true;
         mesh.matrixAutoUpdate = false;
         mesh.updateMatrix();

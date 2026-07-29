@@ -1267,6 +1267,7 @@ window.__brno = {
   get hud() { return hud; },
   input,
   audio,
+  collision,
   physics,
   get postStackOk() { return postStackOk; },
   get postStackProbe() { return postStackProbe; },

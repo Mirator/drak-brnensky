@@ -427,7 +427,9 @@ export function buildGround(group, collision, painter, rng, { puddles }) {
   }
 
   const meshes = batches.finish(group, { castShadow: false, receiveShadow: true });
-  return { meshes: meshes + 1, drains: drains.length };
+  // `plane` is handed back so the LOD can hang its camera probe on the one
+  // mesh in the city that is guaranteed to be submitted every frame
+  return { meshes: meshes + 1, drains: drains.length, plane: ground };
 }
 
 /**

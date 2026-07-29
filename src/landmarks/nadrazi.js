@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROFILE, polyPath } from './detail.js';
+import { PROFILE } from './detail.js';
 
 /**
  * Brno hlavní nádraží.
@@ -168,7 +168,7 @@ export function build(b, ctx) {
   /* ================= 5. the platform canopies ===================== */
   // Cast-iron columns on 11 m centres carrying latticed trusses, with a
   // double-pitched (kinked) glazed roof over them.
-  const PLAT = 4;
+  const PLAT = 3;
   for (let p = 0; p < PLAT; p++) {
     const pz = cz + 22 + p * 14;
     // the platform itself, low enough to step onto
@@ -182,8 +182,10 @@ export function build(b, ctx) {
       if (i < 5) {
         b.place(M.metal, b.p('trussBay', 11, 1.0, 6, 0.11), px + 5.5, colY + 5.0, pz, {});
       }
-      // cross-trusses spanning the platform width
-      b.place(M.metal, b.p('trussBay', 8.6, 0.9, 5, 0.1), px, colY + 5.0, pz, { rotY: Math.PI / 2 });
+      // cross-trusses spanning the platform width, every other bay
+      if (i % 2 === 0) {
+        b.place(M.metal, b.p('trussBay', 8.6, 0.9, 4, 0.1), px, colY + 5.0, pz, { rotY: Math.PI / 2 });
+      }
     }
     // the double-kinked roof: a shallow inner pitch then a steeper eaves fall
     for (const s of [-1, 1]) {
@@ -225,7 +227,6 @@ export function build(b, ctx) {
     for (const c of [-10.6, 0, 10.6]) b.cyl(M.metal, shx + c, 0, shz + 1.6, 0.1, 0.1, 2.8, 6, {});
     b.box(M.litGlass, shx + 8, 0.9, shz - 1.6, 1.6, 1.1, 0.1, { solid: false });
   }
-  void polyPath;
 
   info.nadrazi = {
     name: 'Hlavní nádraží',

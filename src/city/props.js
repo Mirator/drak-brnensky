@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { Rng } from '../rng.js';
 import { getMaterial } from '../materials.js';
-import { Batches, InstanceSet, partsGeometry, label } from './mesh.js';
+import { InstanceSet, partsGeometry, label } from './mesh.js';
+import { TIER } from './chunks.js';
 import {
   FLAG, ROADS, PLAZAS, PLACES, TRAM_STOPS, segments, offsetPolyline, inCore,
 } from './layout.js';
@@ -20,6 +21,12 @@ import { frontageOffset, trackOffsets, samplePolyline, polylineLength } from './
  * real surface so footsteps, impact decals and break-up sounds are right.
  * Small clutter (bollards, plates, wires, café chairs) deliberately gets
  * none — 5000 colliders would cost far more than they are worth.
+ *
+ * Shadows: only things that read as a mass cast — lamp standards, catenary
+ * masts, benches, market stalls, kiosks, shelters, parked cars, pedestrians.
+ * Bollards, bins, planters, chairs, tables, cycle stands, newspaper boxes,
+ * enamel plates and the overhead wire are all excluded, because we run three
+ * shadow cascades and a bollard's shadow is a pixel at three times the price.
  */
 
 /* ------------------------------------------------------------------ */
@@ -224,19 +231,18 @@ function carGeometry() {
 }
 
 function carGlassGeometry() {
-  const parts = [];
-  parts.push({ geo: new THREE.BoxGeometry(1.5, 0.44, 0.05), y: 1.22, z: 0.9, rx: 0.35 });
-  parts.push({ geo: new THREE.BoxGeometry(1.45, 0.4, 0.05), y: 1.22, z: -1.22, rx: -0.3 });
-  for (const sx of [-0.84, 0.84]) {
-    parts.push({ geo: new THREE.BoxGeometry(0.04, 0.36, 1.7), x: sx, y: 1.24, z: -0.15 });
-  }
-  return partsGeometry(parts);
+  return partsGeometry([
+    { geo: new THREE.BoxGeometry(1.5, 0.44, 0.05), y: 1.22, z: 0.9, rx: 0.35 },
+    { geo: new THREE.BoxGeometry(1.6, 0.36, 1.72), y: 1.24, z: -0.15 },
+  ]);
 }
 
 function carWheelsGeometry() {
   const parts = [];
   for (const [sx, sz] of [[-0.86, 1.32], [0.86, 1.32], [-0.86, -1.32], [0.86, -1.32]]) {
-    parts.push({ geo: new THREE.CylinderGeometry(0.31, 0.31, 0.2, 8), x: sx, y: 0.31, z: sz, rz: Math.PI / 2 });
+    // 6-sided: four 8-sided wheels per car was the largest single triangle
+    // line item in the entire city
+    parts.push({ geo: new THREE.CylinderGeometry(0.31, 0.31, 0.2, 6), x: sx, y: 0.31, z: sz, rz: Math.PI / 2 });
   }
   return partsGeometry(parts);
 }
@@ -274,17 +280,19 @@ const COAT_COLOURS = [
 const SKIN_COLOURS = [0xc79a76, 0xa87452, 0xe0b892, 0x8a5c3c, 0xd0a882];
 
 /* ------------------------------------------------------------------ */
-export function buildProps(group, collision, { rng, flagAt, plots, seed, breakables }) {
+export function buildProps(group, collision, { rng, flagAt, plots, seed, breakables, chunks }) {
   const art = new Rng(seed ^ 0x2f19b3);
   const plates = plateAtlas(art);
 
   const M = {
-    iron: getMaterial('paintedMetal', { seed: 1701, color: '#1c2a22' }),
+    // two painted-metal variants serve the whole city: heritage dark for the
+    // cast-iron kit, galvanised grey for everything modern
+    iron: getMaterial('paintedMetal', { seed: 1405, color: '#2b2f34' }),
     steel: getMaterial('paintedMetal', { seed: 1702, color: '#63676c' }),
     wood: getMaterial('wood', { seed: 1703, color: '#54402c' }),
-    stone: getMaterial('stone', { base: '#9a9285', mortar: '#7d766b', scale: 1 }),
-    glass: getMaterial('paneGlass', { seed: 1705, panesX: 2, panesY: 3 }),
-    canvasCloth: getMaterial('wood', { seed: 1706, color: '#b8ac90' }),
+    stone: getMaterial('stone', { base: '#8f887b', mortar: '#726c62', scale: 1.1 }),
+    glass: getMaterial('paneGlass', { seed: 1501, panesX: 2, panesY: 3 }),
+    canvasCloth: new THREE.MeshStandardMaterial({ color: 0xbcb098, roughness: 0.92 }),
     plate: plates.material,
     lampGlow: new THREE.MeshStandardMaterial({
       color: 0xffe6bc, emissive: 0xffbe72, emissiveIntensity: 2.4, roughness: 0.35,
@@ -301,20 +309,23 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
   };
 
   label(M);
-  const batches = new Batches();
-  const B = (m) => batches.get(m);
+  /* merged one-offs (shelters, kiosks, stalls, plates, wire) go through the
+   * chunk grid: `S` for anything with real mass, `D` for trim that stops
+   * mattering past the LOD radius */
+  const S = (m, x, z) => chunks.get(m, x, z, TIER.SILHOUETTE);
+  const D = (m, x, z) => chunks.get(m, x, z, TIER.DETAIL);
 
   const sets = {
     lamp: new InstanceSet(lampGeometry(), M.iron),
     lampGlow: new InstanceSet(lampGlowGeometry(), M.lampGlow, { castShadow: false }),
-    bollard: new InstanceSet(bollardGeometry(), M.iron),
-    bin: new InstanceSet(binGeometry(), M.steel),
+    bollard: new InstanceSet(bollardGeometry(), M.iron, { castShadow: false }),
+    bin: new InstanceSet(binGeometry(), M.steel, { castShadow: false }),
     bench: new InstanceSet(benchGeometry(), M.wood),
-    stand: new InstanceSet(cycleStandGeometry(), M.steel),
-    planter: new InstanceSet(planterGeometry(), M.stone),
-    news: new InstanceSet(newsBoxGeometry(), M.steel),
-    table: new InstanceSet(tableGeometry(), M.steel),
-    chair: new InstanceSet(chairGeometry(), M.steel),
+    stand: new InstanceSet(cycleStandGeometry(), M.steel, { castShadow: false }),
+    planter: new InstanceSet(planterGeometry(), M.stone, { castShadow: false }),
+    news: new InstanceSet(newsBoxGeometry(), M.steel, { castShadow: false }),
+    table: new InstanceSet(tableGeometry(), M.steel, { castShadow: false }),
+    chair: new InstanceSet(chairGeometry(), M.steel, { castShadow: false }),
     mast: new InstanceSet(mastGeometry(), M.steel),
     carBody: new InstanceSet(carGeometry(), M.carPaint, { colour: true }),
     carGlass: new InstanceSet(carGlassGeometry(), M.carGlass, { castShadow: false }),
@@ -348,7 +359,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       }
       // bollards guarding the pavement edge on the sett streets
       if (road.paving === 'sett') {
-        for (let t = 3; t < seg.len - 2; t += rng.float(2.6, 4.2)) {
+        for (let t = 3; t < seg.len - 2; t += rng.float(4.6, 7.4)) {
           for (const side of [-1, 1]) {
             const x = seg.ax + seg.tx * t + seg.nx * (off + 0.5) * side;
             const z = seg.az + seg.tz * t + seg.nz * (off + 0.5) * side;
@@ -399,7 +410,6 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
 
   /* ============ 2. overhead tram wire: masts, spans, contact wire ======= */
   const WIRE_Y = 5.75;
-  const wire = B(M.wire);
   let masts = 0;
   for (const road of ROADS) {
     if (!road.tram) continue;
@@ -426,7 +436,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
           const [a, b] = tops;
           const dx = b[0] - a[0], dz = b[1] - a[1];
           const len = Math.hypot(dx, dz) || 1;
-          wire.box((a[0] + b[0]) / 2, WIRE_Y + 0.55, (a[1] + b[1]) / 2,
+          D(M.wire, a[0], a[1]).box((a[0] + b[0]) / 2, WIRE_Y + 0.55, (a[1] + b[1]) / 2,
             len, 0.05, 0.05, Math.atan2(-dz, dx), () => [len, 0.2, 0, 0]);
         }
       }
@@ -435,7 +445,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
     for (const off of offs) {
       const centre = off === 0 ? road.pts : offsetPolyline(road.pts, off);
       for (const seg of segments(centre)) {
-        wire.box((seg.ax + seg.bx) / 2, WIRE_Y, (seg.az + seg.bz) / 2,
+        D(M.wire, seg.ax, seg.az).box((seg.ax + seg.bx) / 2, WIRE_Y, (seg.az + seg.bz) / 2,
           seg.len, 0.045, 0.045, seg.rot, () => [seg.len, 0.2, 0, 0]);
       }
     }
@@ -448,25 +458,23 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
     if (!clear(x, z, 2.4)) continue;
     const c = Math.cos(rot), s = Math.sin(rot);
     // platform kerb
-    B(M.stone).box(x, 0, z, 9.5, 0.16, 2.6, rot, (f) => [(f === 0 || f === 1 ? 2.6 : 9.5) / 2, 0.5, 0, 0]);
+    S(M.stone, x, z).box(x, 0, z, 9.5, 0.16, 2.6, rot, (f) => [(f === 0 || f === 1 ? 2.6 : 9.5) / 2, 0.5, 0, 0]);
     // shelter: glazed back and side panels under a shallow roof
-    B(M.glass).box(x - s * 1.15, 0.16, z - c * 1.15, 6.2, 2.35, 0.07, rot, () => [3, 2, 0, 0]);
+    S(M.glass, x, z).box(x - s * 1.15, 0.16, z - c * 1.15, 6.2, 2.35, 0.07, rot, () => [3, 2, 0, 0]);
     for (const sgn of [-1, 1]) {
-      B(M.glass).box(x + c * sgn * 3.05, 0.16, z - s * sgn * 3.05, 0.07, 2.35, 2.2, rot,
+      S(M.glass, x, z).box(x + c * sgn * 3.05, 0.16, z - s * sgn * 3.05, 0.07, 2.35, 2.2, rot,
         () => [1.2, 2, 0, 0]);
     }
-    B(M.steel).box(x, 2.51, z, 6.6, 0.12, 2.6, rot, (f) => [(f === 0 || f === 1 ? 2.6 : 6.6) / 2, 0.4, 0, 0]);
+    S(M.steel, x, z).box(x, 2.51, z, 6.6, 0.12, 2.6, rot, (f) => [(f === 0 || f === 1 ? 2.6 : 6.6) / 2, 0.4, 0, 0]);
     for (const sgn of [-1, 1]) {
-      B(M.steel).box(x + c * sgn * 3.1, 0.16, z - s * sgn * 3.1, 0.12, 2.35, 0.12, rot, () => [0.4, 4, 0, 0]);
+      S(M.steel, x, z).box(x + c * sgn * 3.1, 0.16, z - s * sgn * 3.1, 0.12, 2.35, 0.12, rot, () => [0.4, 4, 0, 0]);
     }
     // stop flag with the name plate
     const fx = x + c * 4.6, fz = z - s * 4.6;
-    B(M.steel).box(fx, 0.16, fz, 0.1, 3.1, 0.1, rot, () => [0.4, 6, 0, 0]);
+    D(M.steel, x, z).box(fx, 0.16, fz, 0.1, 3.1, 0.1, rot, () => [0.4, 6, 0, 0]);
     const pi = plates.streetCell(shelters * 3 + 1);
     const [pu, pv] = plates.uv(pi);
-    B(M.plate).quad(fx + c * 0.55, 2.5, fz - s * 0.55, -c * 1.1, 0, s * 1.1, 0, 0.34, 0,
-      plates.su, plates.sv, pu, pv);
-    B(M.plate).quad(fx - c * 0.55, 2.5, fz + s * 0.55, c * 1.1, 0, -s * 1.1, 0, 0.34, 0,
+    D(M.plate, x, z).quad(fx + c * 0.55, 2.5, fz - s * 0.55, -c * 1.1, 0, s * 1.1, 0, 0.34, 0,
       plates.su, plates.sv, pu, pv);
     collision.add(x - s * 1.15, z - c * 1.15,
       Math.abs(c) * 6.2 + Math.abs(s) * 0.4, Math.abs(s) * 6.2 + Math.abs(c) * 0.4,
@@ -547,13 +555,13 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       if (clear(x, z, 2.2)) {
         const rot = rng.float(0, Math.PI);
         const c = Math.cos(rot), s = Math.sin(rot);
-        B(M.wood).box(x, 0.02, z, 3.1, 2.5, 2.2, rot,
+        S(M.wood, x, z).box(x, 0.02, z, 3.1, 2.5, 2.2, rot,
           (f) => [(f === 0 || f === 1 ? 2.2 : 3.1) / 0.8, 2.5 / 0.8, 0, 0]);
-        B(M.steel).box(x, 2.52, z, 3.6, 0.16, 2.7, rot, () => [4, 0.4, 0, 0]);
-        B(M.glass).box(x - s * 1.14, 0.9, z - c * 1.14, 2.3, 1.2, 0.06, rot, () => [1.6, 1, 0, 0]);
+        D(M.steel, x, z).box(x, 2.52, z, 3.6, 0.16, 2.7, rot, () => [4, 0.4, 0, 0]);
+        D(M.glass, x, z).box(x - s * 1.14, 0.9, z - c * 1.14, 2.3, 1.2, 0.06, rot, () => [1.6, 1, 0, 0]);
         const ki = plates.numberCell(kiosks * 5);
         const [ku, kv] = plates.uv(ki);
-        B(M.plate).quad(x + c * 1.1 - s * 1.17, 2.1, z - s * 1.1 - c * 1.17,
+        D(M.plate, x, z).quad(x + c * 1.1 - s * 1.17, 2.1, z - s * 1.1 - c * 1.17,
           -c * 2.2, 0, s * 2.2, 0, 0.36, 0, plates.su, plates.sv, ku, kv);
         const boxes = [collision.add(x, z,
           Math.abs(c) * 3.1 + Math.abs(s) * 2.2, Math.abs(s) * 3.1 + Math.abs(c) * 2.2,
@@ -574,12 +582,12 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
         if (!clear(x, z, 2)) continue;
         const rot = rng.chance(0.5) ? 0 : Math.PI / 2;
         const c = Math.cos(rot), s = Math.sin(rot);
-        B(M.wood).box(x, 0.02, z, 2.4, 0.86, 1.1, rot, () => [3, 1, 0, 0]);
+        S(M.wood, x, z).box(x, 0.02, z, 2.4, 0.86, 1.1, rot, () => [3, 1, 0, 0]);
         for (const sgn of [-1, 1]) {
-          B(M.wood).box(x + c * sgn * 1.1, 0.86, z - s * sgn * 1.1, 0.08, 1.25, 0.08, rot,
+          D(M.wood, x, z).box(x + c * sgn * 1.1, 0.86, z - s * sgn * 1.1, 0.08, 1.25, 0.08, rot,
             () => [0.3, 2, 0, 0]);
         }
-        B(M.canvasCloth).box(x, 2.1, z, 2.7, 0.1, 1.5, rot, () => [3.4, 0.3, 0, 0]);
+        S(M.canvasCloth, x, z).box(x, 2.1, z, 2.7, 0.1, 1.5, rot, () => [3.4, 0.3, 0, 0]);
         const boxes = [collision.add(x, z,
           Math.abs(c) * 2.4 + Math.abs(s) * 1.1, Math.abs(s) * 2.4 + Math.abs(c) * 1.1,
           0, 1, 'stall', 'wood')];
@@ -601,7 +609,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
         const off = road.w / 2 - 1.25;
         let t = rng.float(6, 14);
         while (t < seg.len - 8) {
-          if (rng.chance(0.72)) {
+          if (rng.chance(0.34)) {
             const x = seg.ax + seg.tx * t + seg.nx * off * side;
             const z = seg.az + seg.tz * t + seg.nz * off * side;
             if (flagAt(x, z) === FLAG.ROAD && clear(x, z, 1.1)) {
@@ -617,7 +625,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
               cars++;
             }
           }
-          t += rng.float(5.4, 9.5);
+          t += rng.float(7.5, 14.0);
         }
       }
     }
@@ -640,7 +648,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
         if (!collision.isSolidAt(x - nx * side * 0.6, 3.1, z - nz * side * 0.6)) continue;
         const [pu, pv] = plates.uv(plates.streetCell(ri));
         const ax = tx, az = tz;
-        B(M.plate).quad(x - ax * 0.75, 3.0, z - az * 0.75, ax * 1.5, 0, az * 1.5,
+        D(M.plate, x, z).quad(x - ax * 0.75, 3.0, z - az * 0.75, ax * 1.5, 0, az * 1.5,
           0, 0.4, 0, plates.su, plates.sv, pu, pv);
         plateCount++;
       }
@@ -654,7 +662,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
     const x = plot.x + ox * (plot.d / 2 + 0.09) + ax * plot.w * 0.3;
     const z = plot.z + oz * (plot.d / 2 + 0.09) + az * plot.w * 0.3;
     const [pu, pv] = plates.uv(plates.numberCell(plateCount * 7 + 3));
-    B(M.plate).quad(x + ax * 0.19, 2.45, z + az * 0.19, -ax * 0.38, 0, -az * 0.38,
+    D(M.plate, x, z).quad(x + ax * 0.19, 2.45, z + az * 0.19, -ax * 0.38, 0, -az * 0.38,
       0, 0.26, 0, plates.su, plates.sv, pu, pv);
     plateCount++;
   }
@@ -663,7 +671,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
   const crowd = buildCrowd(rng, sets, { flagAt });
 
   /* ---- flush ---- */
-  let meshes = batches.finish(group, { castShadow: true, receiveShadow: true });
+  let meshes = 0;
   const live = {};
   for (const [name, set] of Object.entries(sets)) {
     const mesh = set.finish(group);
@@ -698,7 +706,7 @@ function buildCrowd(rng, sets, { flagAt }) {
   const insideArena = (x, z) => ARENAS.some(([ax, az, r]) => (x - ax) ** 2 + (z - az) ** 2 < r * r);
 
   const people = [];
-  const target = 240;
+  const target = 90;
   let guard = 0;
   while (people.length < target && guard++ < 4000) {
     const road = ROADS[rng.int(0, ROADS.length - 1)];

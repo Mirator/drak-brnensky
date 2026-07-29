@@ -1,26 +1,35 @@
 import * as THREE from 'three';
 import { getMaterial } from '../materials.js';
-import { Batches, InstanceSet, partsGeometry, label } from './mesh.js';
+import { partsGeometry, label } from './mesh.js';
+import { TIER, InstanceGrid } from './chunks.js';
 import { HALF, FLAG, ROADS, PLAZAS, segments } from './layout.js';
 import { parkPaths } from './plan.js';
 
 /**
  * Vegetation.
  *
- * Denisovy sady is an arboretum with 150+ exotic species, so the parks in
- * the green ring get a real species mix rather than one repeated blob: five
- * canopy archetypes (linden, plane, chestnut, poplar, conifer), each its own
- * instanced mesh, plus instanced undergrowth, merged hedges and clipped
- * park edges. Street trees default to linden, the safe regional default.
+ * Denisovy sady is an arboretum with 150+ exotic species, so the parks in the
+ * green ring get a real species mix rather than one repeated blob: five
+ * canopy archetypes (linden, plane, chestnut, poplar, conifer), plus
+ * undergrowth, clipped hedges and low planting along the gravel spines.
+ * Street trees default to linden, the safe regional default.
  *
- * The forest ring at the map edge sits outside `collision.bounds`, so those
- * trees deliberately get no colliders — 1500 unreachable AABBs used to be
- * the single largest entry in the collider table.
+ * Cost control, in the order it mattered:
+ *
+ *  - Trees are the most numerous thing in the city and the most spatially
+ *    clustered, so trunks and canopies go through `InstanceGrid`: one
+ *    instanced mesh per chunk per species, which restores frustum culling.
+ *    A camera looking down one street no longer submits the woodland on the
+ *    far side of Brno.
+ *  - The forest ring beyond `collision.bounds` is canopy only — no trunk, no
+ *    collider, no shadow casting. Nobody can ever stand in it.
+ *  - Undergrowth is a single 20-triangle blob in the distance-culled detail
+ *    tier and never casts a shadow.
  */
 
 const SPECIES = [
   { name: 'linden', colour: 0x39602f, blobs: [[0, 0.62, 0, 0.46], [-0.34, 0.86, 0.16, 0.3], [0.3, 0.9, -0.14, 0.28]], slim: 1 },
-  { name: 'plane', colour: 0x4a6b34, blobs: [[0, 0.58, 0, 0.5], [-0.42, 0.74, 0.2, 0.34], [0.4, 0.78, -0.22, 0.32], [0, 0.95, 0.05, 0.26]], slim: 1.12 },
+  { name: 'plane', colour: 0x4a6b34, blobs: [[0, 0.58, 0, 0.52], [-0.42, 0.8, 0.2, 0.36], [0.4, 0.84, -0.22, 0.34]], slim: 1.12 },
   { name: 'chestnut', colour: 0x2f5228, blobs: [[0, 0.66, 0, 0.44], [-0.26, 0.94, -0.2, 0.3], [0.28, 0.9, 0.22, 0.3]], slim: 0.95 },
   { name: 'poplar', colour: 0x46652c, blobs: [[0, 0.7, 0, 0.26], [0, 0.96, 0, 0.22], [0, 1.2, 0, 0.16]], slim: 0.6 },
   { name: 'conifer', colour: 0x22402a, blobs: null, slim: 0.7 },
@@ -41,6 +50,14 @@ function canopyGeometry(spec) {
   return partsGeometry(parts);
 }
 
+/** One blob, 20 triangles: the map-edge forest is silhouette and nothing else. */
+function distantCanopyGeometry() {
+  const g = new THREE.IcosahedronGeometry(0.62, 0);
+  g.scale(1, 1.15, 1);
+  g.translate(0, 0.74, 0);
+  return g;
+}
+
 function trunkGeometry() {
   const g = new THREE.CylinderGeometry(0.11, 0.2, 1, 6);
   g.translate(0, 0.5, 0);
@@ -48,41 +65,45 @@ function trunkGeometry() {
 }
 
 function shrubGeometry() {
-  return partsGeometry([
-    { geo: new THREE.IcosahedronGeometry(0.42, 0), x: 0, y: 0.36, z: 0 },
-    { geo: new THREE.IcosahedronGeometry(0.3, 0), x: 0.3, y: 0.26, z: 0.18 },
-  ]);
+  const g = new THREE.IcosahedronGeometry(0.46, 0);
+  g.scale(1, 0.8, 1);
+  g.translate(0, 0.34, 0);
+  return g;
 }
 
-export function buildVegetation(group, collision, { rng }) {
+export function buildVegetation(group, collision, { rng, chunks }) {
   const trunkMat = getMaterial('wood', { seed: 1801, color: '#42332a' });
   const hedgeMat = new THREE.MeshStandardMaterial({ color: 0x2c4a26, roughness: 0.95, flatShading: true });
   const shrubMat = new THREE.MeshStandardMaterial({ color: 0x33562c, roughness: 0.95, flatShading: true });
-
   label({ treeTrunk: trunkMat, hedge: hedgeMat, shrub: shrubMat });
-  const trunk = new InstanceSet(trunkGeometry(), trunkMat);
-  const canopies = SPECIES.map((spec) => new InstanceSet(
+
+  const trunk = new InstanceGrid(chunks, trunkGeometry(), trunkMat);
+  const canopies = SPECIES.map((spec) => new InstanceGrid(
+    chunks,
     canopyGeometry(spec),
     new THREE.MeshStandardMaterial({
       name: `canopy-${spec.name}`, color: spec.colour, roughness: 0.95, flatShading: true,
     }),
   ));
-  const shrubs = new InstanceSet(shrubGeometry(), shrubMat, { castShadow: false });
-  const batches = new Batches();
+  const forestMat = new THREE.MeshStandardMaterial({
+    name: 'canopy-forest', color: 0x2c4a2a, roughness: 0.96, flatShading: true,
+  });
+  const forestGrid = new InstanceGrid(chunks, distantCanopyGeometry(), forestMat, { castShadow: false });
+  const shrubs = new InstanceGrid(chunks, shrubGeometry(), shrubMat, {
+    castShadow: false, tier: TIER.DETAIL,
+  });
 
   let trees = 0;
   let colliders = 0;
-  const plant = (x, z, size, speciesIndex, { solid = true } = {}) => {
+  const plant = (x, z, size, speciesIndex) => {
     const spec = SPECIES[speciesIndex];
     const trunkH = size * 0.42;
     const lean = rng.float(0, Math.PI * 2);
     trunk.push(x, 0, z, lean, size * 0.13, trunkH, size * 0.13);
     canopies[speciesIndex].push(x, trunkH * 0.72, z, lean,
       size * 0.5 * spec.slim, size * 0.52, size * 0.5 * spec.slim);
-    if (solid) {
-      collision.add(x, z, 0.75, 0.75, 0, Math.min(3.2, trunkH), 'tree', 'wood');
-      colliders++;
-    }
+    collision.add(x, z, 0.75, 0.75, 0, Math.min(3.2, trunkH), 'tree', 'wood');
+    colliders++;
     trees++;
   };
 
@@ -91,7 +112,7 @@ export function buildVegetation(group, collision, { rng }) {
     const [cx, cz, w, d] = p.r;
     if (p.type !== FLAG.PARK) continue;
     const arboretum = p.name === 'denisovy' || p.name === 'spilberk';
-    const n = Math.floor((w * d) / (arboretum ? 150 : 210));
+    const n = Math.floor((w * d) / (arboretum ? 210 : 300));
     for (let i = 0; i < n; i++) {
       const x = cx + rng.float(-w / 2 + 3, w / 2 - 3);
       const z = cz + rng.float(-d / 2 + 3, d / 2 - 3);
@@ -100,27 +121,28 @@ export function buildVegetation(group, collision, { rng }) {
         : (rng.chance(0.55) ? 0 : rng.int(1, SPECIES.length - 1));
       plant(x, z, rng.float(3.2, 7.4), sp);
     }
-    // undergrowth, thicker at the edges where nobody walks
-    for (let i = 0; i < Math.floor((w * d) / 90); i++) {
+    for (let i = 0; i < Math.floor((w * d) / 220); i++) {
       const x = cx + rng.float(-w / 2 + 1.5, w / 2 - 1.5);
       const z = cz + rng.float(-d / 2 + 1.5, d / 2 - 1.5);
       if (collision.isSolidAt(x, 1, z)) continue;
-      shrubs.push(x, 0.01, z, rng.float(0, 3.1), rng.float(0.7, 1.5), rng.float(0.6, 1.4), rng.float(0.7, 1.5));
+      shrubs.push(x, 0.01, z, rng.float(0, 3.1),
+        rng.float(0.7, 1.5), rng.float(0.6, 1.4), rng.float(0.7, 1.5));
     }
     // clipped hedge along the two long edges, broken by the path mouths
-    const hedge = batches.get(hedgeMat);
     for (const side of [-1, 1]) {
       const zz = cz + side * (d / 2 - 1.1);
       for (let x = cx - w / 2 + 2; x < cx + w / 2 - 2; x += 4.2) {
-        if (rng.chance(0.22)) continue;
-        hedge.box(x, 0.01, zz, 3.9, rng.float(0.75, 1.15), 0.9, 0,
-          (f) => [(f === 0 || f === 1 ? 0.9 : 3.9) / 0.8, 1.2, 0, 0]);
+        if (rng.chance(0.35)) continue;
+        chunks.get(hedgeMat, x, zz, TIER.DETAIL).box(
+          x, 0.01, zz, 3.9, rng.float(0.75, 1.15), 0.9, 0,
+          (f) => [(f === 0 || f === 1 ? 0.9 : 3.9) / 0.8, 1.2, 0, 0],
+        );
       }
     }
     // low planting alongside the gravel spines
     for (const path of parkPaths(p, rng)) {
       if (path.dirt) continue;
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 6; i++) {
         const k = Math.min(path.pts.length - 2,
           Math.floor(rng.float(0, 1) * (path.pts.length - 1)));
         const seg = path.pts[k];
@@ -138,7 +160,7 @@ export function buildVegetation(group, collision, { rng }) {
   for (const road of ROADS) {
     if (road.w < 14) continue;
     for (const seg of segments(road.pts)) {
-      for (let t = 12; t < seg.len - 8; t += rng.float(16, 26)) {
+      for (let t = 12; t < seg.len - 8; t += rng.float(20, 32)) {
         for (const side of [-1, 1]) {
           const off = road.w / 2 + 2.4;
           const x = seg.ax + seg.tx * t + seg.nx * off * side;
@@ -151,19 +173,31 @@ export function buildVegetation(group, collision, { rng }) {
   }
 
   /* ---- forest ring at the map edge, outside the playable bounds ---- */
-  for (let i = 0; i < 1150; i++) {
+  let forestTrees = 0;
+  for (let i = 0; i < 620; i++) {
     const side = rng.int(0, 3);
     const along = rng.float(-HALF, HALF);
     const depth = rng.float(HALF - 24, HALF - 2);
     const x = side === 0 ? -depth : side === 1 ? depth : along;
     const z = side === 2 ? -depth : side === 3 ? depth : along;
-    plant(x, z, rng.float(4.5, 8.5), rng.chance(0.4) ? 4 : rng.int(0, 3), { solid: false });
+    const size = rng.float(4.5, 8.5);
+    forestGrid.push(x, 0, z, rng.float(0, Math.PI * 2),
+      size * 0.5, size * 0.55, size * 0.5);
+    forestTrees++;
   }
 
-  let meshes = batches.finish(group, { castShadow: true, receiveShadow: true });
-  if (trunk.finish(group)) meshes++;
-  for (const c of canopies) if (c.finish(group)) meshes++;
-  if (shrubs.finish(group)) meshes++;
+  let meshes = trunk.finish(group);
+  for (const c of canopies) meshes += c.finish(group);
+  meshes += forestGrid.finish(group);
+  meshes += shrubs.finish(group);
 
-  return { meshes, trees, colliders, species: SPECIES.length };
+  return {
+    meshes,
+    trees: trees + forestTrees,
+    parkTrees: trees,
+    forestTrees,
+    shrubs: shrubs.count,
+    colliders,
+    species: SPECIES.length,
+  };
 }

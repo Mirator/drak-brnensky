@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROFILE, polyPath } from './detail.js';
+import { PROFILE } from './detail.js';
 import { mergeAll } from '../geometry.js';
 
 /**
@@ -185,7 +185,6 @@ export function build(b, ctx) {
       b.place(M.stonePale, b.p('urn', 2.0), cx + i * 4.4, EAVES - 0.4, nz - 2.8, {});
     }
     b.tier(0);
-    void polyPath;
     info.mistodrzitelsky = {
       name: 'Místodržitelský palác',
       pos: new THREE.Vector3(cx, 0, nz - 6),

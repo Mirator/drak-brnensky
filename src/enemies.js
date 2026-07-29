@@ -118,6 +118,21 @@ export class EnemyManager {
     this.onShoot = null;
     this.onBossRoar = null;
     this.onBossPhase = null;
+    /** Fired once when a creature acquires the player (main.js gives it a
+     * voice through audio.roar). Re-arms if it loses him again. */
+    this.onAggro = null;
+
+    /**
+     * Optional: the shared `PhysicsWorld` from src/rigidbody.js. Set it and
+     * every corpse is handed to the ragdoll solver instead of playing the
+     * procedural collapse:
+     *
+     *     enemies.physics = physics;      // one line in main.js
+     *
+     * Left null, deaths fall back to the bone-driven collapse, so this file
+     * never depends on the solver existing.
+     */
+    this.physics = null;
 
     this.scratch = new THREE.Vector3();
     this.serial = 0;
@@ -166,9 +181,13 @@ export class EnemyManager {
       if (o.isMesh) {
         o.castShadow = true;
         o.receiveShadow = true;
-        // skinned bounds live in bind space; the pose can push a wing or a
-        // tail well outside them, so let the (few) creature meshes through
-        o.frustumCulled = false;
+        /* Skinned bounds are computed in bind space, so a spread wing or a
+         * whipping tail would poke outside a tight sphere and pop. Each
+         * archetype therefore publishes a deliberately generous
+         * `boundingRadius` (see PartBuilder#build) that already covers its
+         * widest pose, and culling stays on — worth having in a scene that
+         * is fighting for draw calls. */
+        o.frustumCulled = true;
       }
     });
     const e = {
@@ -259,6 +278,13 @@ export class EnemyManager {
     e.perchT = 0;
     e.perchBlind = 0;
     e.perched = false;
+    e.aggroed = false;
+    e.aggroT = 0;
+    e.aggroNext = this.rng.float(9, 16);
+    e.aggroScan = this.rng.float(0, 0.4);
+    e.ragdoll = null;
+    e.lastHitX = 0;
+    e.lastHitZ = 1;
     e.flyTarget = e.flyTarget || new THREE.Vector3();
     e.flyMode = 'hover';
     e.vulnerable = 0;
@@ -321,6 +347,9 @@ export class EnemyManager {
       const len = Math.hypot(dir.x, dir.z) || 1;
       e.flinchX = (dir.x * c - dir.z * s) / len;
       e.flinchZ = (dir.x * s + dir.z * c) / len;
+      // kept in world space too: it is the impulse a ragdoll gets thrown by
+      e.lastHitX = dir.x / len;
+      e.lastHitZ = dir.z / len;
     }
     if (dir && e.typeId !== 'boss' && e.typeId !== 'golem') {
       e.vel.addScaledVector(dir, Math.min(6, dmg / (e.type.mass * 4)));
@@ -553,8 +582,8 @@ export class EnemyManager {
     this.vfx.burst(origin, 0xff7a2a, 10, 5, { size: 0.3, life: 0.35, drag: 4 });
   }
 
-  /** The breath cone: particles, sweep and the continuous damage test.
-   * Damage geometry kept verbatim from the line-of-sight fix. */
+  /** The breath cone: the flame jet, the sweep and the continuous damage
+   * test. Damage geometry kept verbatim from the line-of-sight fix. */
   bossBreathTick(e, dt, info) {
     const player = info.player;
     e.breath -= dt;
@@ -566,14 +595,25 @@ export class EnemyManager {
       -0.12,
       fwd.x * Math.sin(sweep) + fwd.z * Math.cos(sweep),
     ).normalize();
-    for (let k = 0; k < 3; k++) {
-      this.vfx.emit(
-        origin.x + dir.x * 2, origin.y, origin.z + dir.z * 2,
-        dir.x * this.vfxRng.float(16, 32) + this.vfxRng.float(-2, 2),
-        this.vfxRng.float(-0.5, 2.5),
-        dir.z * this.vfxRng.float(16, 32) + this.vfxRng.float(-2, 2),
-        _c1.set(this.vfxRng.chance(0.4) ? 0xffe08a : 0xff5a1a), 1.0, 0.55, 1.2, 0.6,
-      );
+    /* The jet itself. `dir` above is the damage axis: horizontal, at chest
+     * height, ±30° and out to 22 m. The visual is aimed down at the cobbles
+     * ~13 m ahead so the fire pools and runs along the ground, which lands
+     * inside the same horizontal cone — the two agree in plan view, which is
+     * the view the player dodges in.
+     *
+     * vfx.js still drives this same jet off `e.breath` in its own
+     * `_updateBreath()`. While that method exists we let it, or the jet is
+     * emitted twice; once the VFX owner removes it this call takes over. */
+    if (this.vfx.flameBreath && typeof this.vfx._updateBreath !== 'function') {
+      const ahead = 13 * Math.max(1, e.scale * 0.5);
+      const landY = (this.collision.groundHeight(
+        e.pos.x + dir.x * ahead, e.pos.z + dir.z * ahead, e.pos.y + 2, 1.5) || 0);
+      _v5.set(dir.x * ahead, landY + 0.5 - origin.y, dir.z * ahead).normalize();
+      this.vfx.flameBreath(origin, _v5, dt, {
+        power: e.phase2 ? 1.25 : 1,
+        range: ahead * 1.8,
+        ground: landY + 0.05,
+      });
     }
     // cone damage
     const target = _v4.copy(info.pc);
@@ -592,46 +632,115 @@ export class EnemyManager {
   /* ---------------------------------------------------------------- */
   /* ragdoll handoff                                                   */
   /* ---------------------------------------------------------------- */
+  /* ragdoll handoff                                                   */
+  /* ---------------------------------------------------------------- */
   /**
-   * Everything an external solver needs to take a creature's skeleton over,
-   * in the entry shape `ragdollBonesFromObjects()` in src/rigidbody.js
-   * already expects: one record per driver bone with a live Object3D, the
-   * tip object that gives its length and direction, a capsule radius, a mass
-   * and joint limits. Nothing here imports the solver — the caller does.
+   * Solver-ready bone records for one creature, straight from its live pose:
+   * the shape `PhysicsWorld#spawnRagdoll()` in src/rigidbody.js eats, with
+   * `position`/`quaternion` at the joint (proximal) end in world space and
+   * parents ahead of children.
    *
-   *   const entries = enemies.ragdollEntries(e);
-   *   e.ragdoll = physics.spawnRagdoll(ragdollBonesFromObjects(entries), {...});
-   *
-   * Setting `e.ragdoll` is the contract: every animator returns immediately
-   * while it is set, so the solver owns the bone transforms from that frame
-   * on and nothing fights it. Undriven bones simply follow their parents.
-   *
-   * Note the axis: these rigs are authored in bind space with identity rest
-   * rotations, so a bone's direction is `rest[tip] - rest[name]`, NOT its own
-   * local axis. Read the direction from the tip, or accept a per-entry axis.
+   * These rigs are authored in bind space with identity rest rotations, so a
+   * bone's direction lives in its child's offset, not in its own quaternion.
+   * That is why the quaternion handed over is `boneWorldRotation * fix`,
+   * where `fix` maps +Y onto the bone's rest direction — so the capsules line
+   * up with the geometry and `boneAxis: 'y'` is honest. The same `fix` is
+   * undone on the way back in `_driveRagdoll()`.
    */
-  ragdollEntries(e) {
-    const spec = e.model.def.ragdoll;
-    if (!spec) return null;
-    const bones = e.model.bones;
+  ragdollBones(e) {
+    const plan = ragdollPlan(e.model.def, e.model.tpl);
+    if (!plan.length) return null;
+    e.object.updateMatrixWorld(true);
+    const s = e.scale;
     const out = [];
-    for (const s of spec) {
-      const object = bones[s.name];
-      if (!object) continue;
+    for (const p of plan) {
+      const bone = e.model.bones[p.name];
+      if (!bone) continue;
+      bone.matrixWorld.decompose(_rp, _rq, _rs);
+      _rq2.copy(_rq).multiply(p.fix);
       out.push({
-        name: s.name,
-        parent: s.parent || null,
-        object,
-        tip: s.tip ? bones[s.tip] : null,
-        length: (s.length ?? 0.22) * e.scale,
-        radius: s.radius * e.scale,
-        mass: s.mass * e.scale ** 3,
-        cone: s.cone ?? 0.9,
-        twist: s.twist ?? 0.5,
+        name: p.name,
+        parent: p.parent,
+        position: { x: _rp.x, y: _rp.y, z: _rp.z },
+        quaternion: { x: _rq2.x, y: _rq2.y, z: _rq2.z, w: _rq2.w },
+        length: p.length * s,
+        radius: p.radius * s,
+        mass: p.mass * s * s * s,
+        cone: p.cone,
+        twist: p.twist,
+        boneAxis: 'y',
         surface: e.typeId === 'golem' ? 'stone' : 'flesh',
       });
     }
     return out;
+  }
+
+  /**
+   * Hand a corpse to the ragdoll solver. Returns false if there is no solver
+   * or no free ragdoll slot, in which case the procedural collapse plays
+   * instead — this file works either way.
+   */
+  _handOffToRagdoll(e, dirX, dirZ) {
+    const phys = this.physics;
+    if (!phys || typeof phys.spawnRagdoll !== 'function') return false;
+    /* The solver keeps only a handful of ragdoll slots and evicts the oldest,
+     * and the player's own corpse needs one of them. A wave can kill six
+     * whelps in two seconds, so the light archetypes only get a real ragdoll
+     * when there is clearly room; the heavy deaths that carry the moment —
+     * a golem toppling, the dragon coming down — always do. */
+    const heavy = e.typeId === 'golem' || e.typeId === 'boss';
+    const slots = phys.opt && phys.opt.maxRagdolls;
+    const used = phys.ragdolls ? phys.ragdolls.length : 0;
+    if (!heavy && slots && used >= slots - 1) return false;
+    const bones = this.ragdollBones(e);
+    if (!bones || !bones.length) return false;
+    const push = 22 * e.type.mass + 26;
+    const rag = phys.spawnRagdoll(bones, {
+      impulse: _v1.set(dirX * push, push * 0.32, dirZ * push),
+      hitBone: bones[0].name,        // the torso: bone 0 is always the root
+      velocity: e.vel,
+      blendTime: 0.1,
+      settleTimeout: 3.5,
+      maxLifetime: (CORPSE_LIFE[e.typeId] ?? 3) * 2.4,
+      fadeTime: 1.2,
+      userData: e,
+    });
+    if (!rag) return false;
+    e.ragdoll = rag;
+    e.ragdollFix = ragdollFixMap(e.model.def, e.model.tpl);
+    return true;
+  }
+
+  /**
+   * Copy the solver's world bone transforms back onto the rig, converted into
+   * each bone's parent frame so the root group's own position, facing and
+   * per-type scale stay untouched. Bones the solver does not drive keep the
+   * pose the animator left them in, which is what makes a 23-body ragdoll
+   * enough for a 47-bone dragon.
+   */
+  _driveRagdoll(e, sink) {
+    const rag = e.ragdoll;
+    const bones = e.model.bones;
+    const fixes = e.ragdollFix;
+    for (let i = 0; i < rag.bones.length; i++) {
+      const rb = rag.bones[i];
+      const bone = bones[rb.name];
+      if (!bone || !rb.out || !bone.parent) continue;
+      const fixInv = fixes.get(rb.name);
+      if (!fixInv) continue;
+      const parent = bone.parent;
+      parent.updateWorldMatrix(true, false);
+      parent.matrixWorld.decompose(_rp, _rq, _rs);
+      _rqi.copy(_rq).invert();
+      const s = _rs.x || 1;
+      _rv.copy(rb.out.position);
+      if (sink) _rv.y -= sink;
+      bone.position.copy(_rv.sub(_rp).applyQuaternion(_rqi).divideScalar(s));
+      _rq2.copy(rb.out.quaternion).multiply(fixInv);
+      bone.quaternion.copy(_rqi).multiply(_rq2);
+      bone.updateMatrix();
+      bone.matrixWorldNeedsUpdate = true;
+    }
   }
 
   /* ---------------------------------------------------------------- */
@@ -832,6 +941,11 @@ export class EnemyManager {
 
   clear() {
     for (const e of this.list) {
+      if (e.ragdoll) {
+        // never leave a solver driving a body we just handed back to the pool
+        if (e.ragdoll.alive) e.ragdoll.remove();
+        e.ragdoll = null;
+      }
       e.object.visible = false;
       this.pools[e.typeId].push(e);
     }
@@ -891,6 +1005,33 @@ export class EnemyManager {
       info.distFull = distFull;
       info.toX = toX;
       info.toZ = toZ;
+
+      /* --- aggro: the moment it picks the player out ---
+       * One call per acquisition, re-armed if it loses him, plus an
+       * occasional re-issue so a long fight does not go quiet. The line of
+       * sight test is throttled — this runs for up to fifteen creatures. */
+      if (this.onAggro && e.typeId !== 'boss' && e.state !== 'spawn') {
+        e.aggroScan -= dt;
+        if (e.aggroed) {
+          e.aggroT += dt;
+          if (distFlat > 62) {
+            e.aggroed = false;
+            e.aggroT = 0;
+          } else if (e.aggroT > e.aggroNext && distFlat < 40) {
+            e.aggroT = 0;
+            e.aggroNext = this.rng.float(11, 19);
+            this.onAggro(e);
+          }
+        } else if (e.aggroScan <= 0) {
+          e.aggroScan = 0.4;
+          if (distFlat < 34 && this.los(e, info, 42)) {
+            e.aggroed = true;
+            e.aggroT = 0;
+            e.aggroNext = this.rng.float(9, 16);
+            this.onAggro(e);
+          }
+        }
+      }
 
       /* --- AI --- */
       e.moveX = 0;
@@ -1138,6 +1279,11 @@ export class EnemyManager {
     if (e.typeId === 'golem' || e.typeId === 'boss') {
       this.vfx.explosion(_v1.copy(e.pos).setY(e.pos.y + 1.4), e.typeId === 'boss' ? 14 : 5, 0xff8a3a);
     }
+    /* Hand the skeleton to the ragdoll solver if one was injected. It blends
+     * out of the pose that was on screen, so there is no snap; the animators
+     * stop writing bones for as long as `e.ragdoll` is set. Without a solver
+     * the procedural collapse in the animators plays instead. */
+    this._handOffToRagdoll(e, e.lastHitX ?? 0, e.lastHitZ ?? 1);
     this.onDeath && this.onDeath(e);
   }
 
@@ -1148,6 +1294,40 @@ export class EnemyManager {
    */
   _updateCorpse(e, dt, ctx, index) {
     e.bar.group.visible = false;
+
+    /* --- solver-driven corpse --- */
+    if (e.ragdoll) {
+      if (e.ragdoll.alive) {
+        const life = (CORPSE_LIFE[e.typeId] ?? 2.8) * 2.4;
+        // the solver fades once it has settled; ride that into the ground
+        const fade = e.ragdoll.fade ?? 1;
+        const sink = (1 - fade) * (e.typeId === 'boss' ? 2.6 : 0.9);
+        this._driveRagdoll(e, sink);
+        e.glow = -0.75 * (1 - fade);     // the light goes out of it
+        this._shade(e);
+        if (e.stateT > life) {
+          e.ragdoll.remove();
+          e.ragdoll = null;
+        }
+        return;
+      }
+      /* The handle died — settled and faded out, or evicted by a newer
+       * ragdoll. If it faded on schedule the body is gone and the slot goes
+       * back to the pool; if it was cut short, fall back to the procedural
+       * corpse so nothing pops out of the world in front of the player. */
+      e.ragdoll = null;
+      const life = CORPSE_LIFE[e.typeId] ?? 2.8;
+      if (e.stateT < life * 0.6) {
+        e.corpseOnGround = true;
+        e.landedT = Math.max(e.landedT, 0.4);
+      } else {
+        e.object.visible = false;
+        this.pools[e.typeId].push(e);
+        this.list.splice(index, 1);
+        return;
+      }
+    }
+
     if (!e.corpseOnGround) {
       e.vel.y -= 22 * dt;
       const f = Math.exp(-1.1 * dt);
@@ -1235,6 +1415,67 @@ export class EnemyManager {
   }
 }
 
+/* ------------------------------------------------------------------ */
+/* ragdoll plans, cached per archetype                                 */
+/* ------------------------------------------------------------------ */
+const _ragPlans = new Map();
+const _ragFixes = new Map();
+const _UPY = new THREE.Vector3(0, 1, 0);
+
+/**
+ * Static half of the ragdoll handoff: for each driver bone, the rest-space
+ * direction it runs in, the quaternion that maps +Y onto it, its length and
+ * its collision/mass properties. Computed once per archetype from the rig's
+ * rest pose, because none of it changes at runtime.
+ */
+function ragdollPlan(def, tpl) {
+  let plan = _ragPlans.get(def.id);
+  if (plan) return plan;
+  plan = [];
+  const rest = tpl.rest;
+  for (const s of def.ragdoll || []) {
+    const from = rest[s.name];
+    if (!from) continue;
+    const dir = new THREE.Vector3();
+    let length = s.length ?? 0.25;
+    if (s.tip && rest[s.tip]) {
+      dir.copy(rest[s.tip]).sub(from);
+      const d = dir.length();
+      if (d > 1e-4) length = d;
+    } else {
+      // no tip: the bone runs the way it was placed relative to its rig parent
+      const rigParent = tpl.parents[tpl.index[s.name]];
+      if (rigParent && rest[rigParent]) dir.copy(from).sub(rest[rigParent]);
+    }
+    if (dir.lengthSq() < 1e-8) dir.copy(_UPY);
+    dir.normalize();
+    const fix = new THREE.Quaternion().setFromUnitVectors(_UPY, dir);
+    plan.push({
+      name: s.name,
+      parent: s.parent || null,
+      fix,
+      fixInv: fix.clone().invert(),
+      length,
+      radius: s.radius,
+      mass: s.mass,
+      cone: s.cone ?? 0.9,
+      twist: s.twist ?? 0.5,
+    });
+  }
+  _ragPlans.set(def.id, plan);
+  return plan;
+}
+
+/** name → inverse fix quaternion, for the per-frame write-back. */
+function ragdollFixMap(def, tpl) {
+  let map = _ragFixes.get(def.id);
+  if (map) return map;
+  map = new Map();
+  for (const p of ragdollPlan(def, tpl)) map.set(p.name, p.fixInv);
+  _ragFixes.set(def.id, map);
+  return map;
+}
+
 /**
  * Closest approach between segment P(s) = p + s*u and segment Q(t) = q + t*v,
  * with s and t clamped to [0,1]. Returns { s, t, dist }.
@@ -1276,4 +1517,10 @@ const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
 const _v5 = new THREE.Vector3();
-const _c1 = new THREE.Color();
+/* ragdoll handoff scratch — decompose targets and quaternion working space */
+const _rp = new THREE.Vector3();
+const _rs = new THREE.Vector3();
+const _rv = new THREE.Vector3();
+const _rq = new THREE.Quaternion();
+const _rq2 = new THREE.Quaternion();
+const _rqi = new THREE.Quaternion();

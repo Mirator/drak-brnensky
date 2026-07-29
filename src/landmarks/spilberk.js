@@ -160,7 +160,7 @@ export function build(b, ctx) {
     // windows: real baroque surrounds on the long faces
     const along = w > d;
     const span = along ? w : d;
-    const n = Math.max(2, Math.floor((span - 8) / 7.0));
+    const n = Math.max(2, Math.floor((span - 8) / 9.5));
     for (let i = 0; i < n; i++) {
       const u = -(span - 6) / 2 + ((span - 6) / (n - 1)) * i;
       for (const side of [-1, 1]) {
@@ -184,8 +184,8 @@ export function build(b, ctx) {
   };
   wing(0, -24, 58, 13);
   wing(0, 25, 58, 13);
-  wing(-25, 0, 13, 37);
-  wing(24, 0, 13, 37);
+  wing(-25, 0, 13, 37, 2);
+  wing(24, 0, 13, 37, 2);
   // the mid-18th-century cross range that split one courtyard into two
   wing(0, 1, 11, 36, 2);
 

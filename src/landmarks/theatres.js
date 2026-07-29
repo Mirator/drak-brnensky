@@ -196,10 +196,13 @@ export function buildJanacek(b, ctx) {
     // jets rise from the water surface — b.cyl takes the BOTTOM as y
     b.cyl(M.water, cx + t, 0.52, bz, 0.05, 0.13, 2.2 + (i % 3) * 0.9, 5);
   }
-  // planted terraces flanking the basin
+  // planted terraces flanking the basin, with the 1965 steel railing
   for (const s of [-1, 1]) {
     b.box(M.grass, cx + s * 22, 0.36, bz, 12, 0.3, 14, { tag: 'terrain' });
     b.mould(M.stonePale, cx + s * 22, 0, bz, 12.6, 14.6, PROFILE.cap);
+    for (let i = -2; i <= 2; i++) {
+      b.place(M.metal, b.p('railing', 2.8, 1.0, 6, 0.05), cx + s * 22 + i * 2.8, 0.66, bz - 7.1, {});
+    }
   }
 
   info.janacek = {

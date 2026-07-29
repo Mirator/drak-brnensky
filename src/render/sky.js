@@ -53,27 +53,72 @@ export const AERIAL = {
 };
 
 let aerialInstalled = false;
+let aerialRevision = 0;
 
 /**
- * Patches three's fog chunks in place. Idempotent. Must run before any
- * material is constructed — it is called at the bottom of this module.
+ * Formats a JS number as a GLSL float literal. Everything baked into the
+ * chunks goes through this — a bare `0` or `1` is an *int* in GLSL and will
+ * not compile inside a float expression.
  */
-export function installAerialPerspective() {
-  if (aerialInstalled) return;
-  aerialInstalled = true;
+function glslFloat(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v)) throw new Error(`aerial perspective: ${n} is not a finite number`);
+  let s = v.toFixed(8).replace(/0+$/, '');
+  if (s.endsWith('.')) s += '0';
+  return s;
+}
 
-  const C = THREE.ShaderChunk;
+/**
+ * Bakes a Color or a Vector3 as a GLSL vec3 literal.
+ *
+ * Colors carry r/g/b and Vector3 carries x/y/z, so this has to branch —
+ * reading the wrong triplet yields `undefined`, which glslFloat() throws on
+ * rather than letting `vec3( undefined, ... )` reach the compiler.
+ *
+ * Color components are already linear-sRGB (three converts on setHex with
+ * ColorManagement enabled), which is the same space `fogColor` arrives in,
+ * so the baked tints and the uniform are directly comparable.
+ */
+const glslVec3 = (v) => {
+  const [a, b, c] = v.isColor ? [v.r, v.g, v.b] : [v.x, v.y, v.z];
+  return `vec3( ${glslFloat(a)}, ${glslFloat(b)}, ${glslFloat(c)} )`;
+};
 
-  /* extra uniforms — merged into every material that uses fog */
-  Object.assign(THREE.UniformsLib.fog, {
-    fogSunDirection: { value: SUN_DIR.clone() },
-    fogSunColor: { value: AERIAL.sunColor.clone() },
-    fogUpColor: { value: AERIAL.upColor.clone() },
-    fogHeightFalloff: { value: AERIAL.heightFalloff },
-    fogBaseY: { value: AERIAL.baseY },
-    fogSunPower: { value: AERIAL.sunPower },
-    fogSunStrength: { value: AERIAL.sunStrength },
-  });
+/**
+ * Builds the four fog chunks with the AERIAL settings baked in as GLSL
+ * constants.
+ *
+ * WHY CONSTANTS AND NOT UNIFORMS — this was the bug that turned the whole
+ * composited frame black, so it is worth spelling out.
+ *
+ * three builds `ShaderLib.<id>.uniforms` by calling
+ * `mergeUniforms([ ..., UniformsLib.fog ])` at *three's own module-evaluation
+ * time*, and mergeUniforms deep-clones. `WebGLRenderer` then clones per
+ * material from that snapshot. So adding keys to `UniformsLib.fog`
+ * afterwards — the only time we could, since three is imported before us —
+ * reaches exactly zero materials. This chunk used to declare seven uniforms
+ * that nothing ever uploaded; they all defaulted to 0, and
+ * `pow( fogSunAmt, fogSunPower )` became `pow( 0.0, 0.0 )`, which GLSL
+ * leaves undefined and which is NaN on any hardware evaluating it as
+ * `exp2( y * log2( x ) )`.
+ *
+ * That NaN explained the direct-vs-composer split precisely. Rendering
+ * straight to the canvas applies in-material tone mapping and AgX ends in
+ * `clamp( color, 0.0, 1.0 )`, which launders NaN into something visible.
+ * Rendering into a render target uses `NoToneMapping`, so raw NaN landed in
+ * the HDR buffer and poisoned every downstream pass — which is also why
+ * disabling any single pass changed nothing.
+ *
+ * Baking removes the failure mode outright: no uniform is left to go
+ * missing, and `fog_pars_fragment` now declares only the uniforms three
+ * genuinely provides. The cost is that retuning needs a recompile, which is
+ * what `configureAerialPerspective()` handles — a fair trade, since the sun
+ * never moves in this game and these are compile-time constants in fact as
+ * well as in principle.
+ */
+function buildFogChunks() {
+  const f = glslFloat;
+  const C = {};
 
   /* world position varying. GLSL ES 1.00 has no inverse(), but viewMatrix
    * is rigid, so worldPos = Rᵀ·viewPos + cameraPosition. */
@@ -108,13 +153,6 @@ export function installAerialPerspective() {
 #ifdef USE_FOG
 
 	uniform vec3 fogColor;
-	uniform vec3 fogSunColor;
-	uniform vec3 fogUpColor;
-	uniform vec3 fogSunDirection;
-	uniform float fogHeightFalloff;
-	uniform float fogBaseY;
-	uniform float fogSunPower;
-	uniform float fogSunStrength;
 	varying float vFogDepth;
 	varying vec3 vFogWorldPos;
 
@@ -128,6 +166,17 @@ export function installAerialPerspective() {
 		uniform float fogFar;
 
 	#endif
+
+	/* Baked, NOT uniforms — see buildFogChunks(). Only fogColor and
+	 * fogDensity/fogNear/fogFar above are real uniforms, because those are
+	 * the only ones three actually provides and uploads. */
+	const vec3 FOG_SUN_DIR = ${glslVec3(SUN_DIR)};
+	const vec3 FOG_SUN_COLOR = ${glslVec3(AERIAL.sunColor)};
+	const vec3 FOG_UP_COLOR = ${glslVec3(AERIAL.upColor)};
+	const float FOG_HEIGHT_FALLOFF = ${f(AERIAL.heightFalloff)};
+	const float FOG_BASE_Y = ${f(AERIAL.baseY)};
+	const float FOG_SUN_POWER = ${f(AERIAL.sunPower)};
+	const float FOG_SUN_STRENGTH = ${f(AERIAL.sunStrength)};
 
 #endif
 `;
@@ -143,9 +192,9 @@ export function installAerialPerspective() {
 
 	#ifdef FOG_EXP2
 
-		float fogH0 = vFogWorldPos.y - fogBaseY;
-		float fogH1 = cameraPosition.y - fogBaseY;
-		float fogK = max( fogHeightFalloff, 1e-5 );
+		float fogH0 = vFogWorldPos.y - FOG_BASE_Y;
+		float fogH1 = cameraPosition.y - FOG_BASE_Y;
+		float fogK = max( FOG_HEIGHT_FALLOFF, 1e-5 );
 		float fogDH = fogH0 - fogH1;
 		float fogTau;
 		if ( abs( fogDH ) > 0.02 ) {
@@ -156,9 +205,14 @@ export function installAerialPerspective() {
 		float fogFactor = 1.0 - exp( - max( fogTau, 0.0 ) );
 
 		vec3 fogRay = normalize( vFogWorldPos - cameraPosition );
-		float fogSunAmt = max( dot( fogRay, fogSunDirection ), 0.0 );
-		vec3 fogTint = mix( fogColor, fogSunColor, pow( fogSunAmt, fogSunPower ) * fogSunStrength );
-		fogTint = mix( fogTint, fogUpColor, clamp( fogRay.y * 1.7, 0.0, 1.0 ) * 0.65 );
+		/* The base is clamped off zero on purpose: pow( 0.0, 0.0 ) is
+		 * undefined in GLSL and NaN on most hardware, and a NaN here
+		 * propagates through the entire HDR buffer and every pass after it.
+		 * FOG_SUN_POWER is a literal now, so this can only bite if someone
+		 * retunes sunPower to 0 — cheap insurance against that. */
+		float fogSunAmt = max( dot( fogRay, FOG_SUN_DIR ), 1e-5 );
+		vec3 fogTint = mix( fogColor, FOG_SUN_COLOR, pow( fogSunAmt, FOG_SUN_POWER ) * FOG_SUN_STRENGTH );
+		fogTint = mix( fogTint, FOG_UP_COLOR, clamp( fogRay.y * 1.7, 0.0, 1.0 ) * 0.65 );
 
 		float fogDither = fract( sin( dot( gl_FragCoord.xy, vec2( 12.9898, 78.233 ) ) ) * 43758.5453 ) - 0.5;
 		fogFactor = clamp( fogFactor + fogDither * 0.006, 0.0, 1.0 );
@@ -174,11 +228,42 @@ export function installAerialPerspective() {
 
 #endif
 `;
+
+  return C;
+}
+
+/** Writes the generated chunks into three's ShaderChunk registry. */
+function writeFogChunks() {
+  Object.assign(THREE.ShaderChunk, buildFogChunks());
 }
 
 /**
- * Live re-tune of the aerial perspective. Cheap but not free (it walks
- * every material in the scene), so call it from settings changes, never
+ * Patches three's fog chunks in place. Idempotent. Must run before any
+ * material is constructed — it is called at the bottom of this module.
+ */
+export function installAerialPerspective() {
+  if (aerialInstalled) return;
+  aerialInstalled = true;
+  writeFogChunks();
+}
+
+/**
+ * The uniforms three itself declares in the fog chunks and uploads every
+ * frame. Anything else the chunk references must be baked as a constant —
+ * see buildFogChunks(). Exported so the invariant can be checked headlessly.
+ */
+export const PROVIDED_FOG_UNIFORMS = ['fogColor', 'fogDensity', 'fogNear', 'fogFar'];
+
+/**
+ * Live re-tune. Regenerates the chunks and forces the affected materials to
+ * recompile.
+ *
+ * The revision define is load-bearing: three's program cache is keyed on
+ * material parameters and defines, *not* on chunk contents, so
+ * `needsUpdate` on its own would hand back the previously cached program
+ * built from the old chunk text. Bumping a define changes the cache key.
+ *
+ * Recompiles every fog material, so this is a settings-time call, never
  * per frame.
  */
 export function configureAerialPerspective(scene, opts = {}) {
@@ -187,34 +272,26 @@ export function configureAerialPerspective(scene, opts = {}) {
   if (opts.sunColor) AERIAL.sunColor = new THREE.Color(opts.sunColor);
   if (opts.upColor) AERIAL.upColor = new THREE.Color(opts.upColor);
 
-  if (scene.fog) {
+  /* density and base colour stay real uniforms: three uploads them from the
+   * fog object every frame, so changing those two needs no recompile. */
+  if (scene && scene.fog) {
     scene.fog.color.copy(AERIAL.color);
     scene.fog.density = AERIAL.density;
   }
 
-  const defaults = THREE.UniformsLib.fog;
-  defaults.fogSunColor.value.copy(AERIAL.sunColor);
-  defaults.fogUpColor.value.copy(AERIAL.upColor);
-  defaults.fogHeightFalloff.value = AERIAL.heightFalloff;
-  defaults.fogBaseY.value = AERIAL.baseY;
-  defaults.fogSunPower.value = AERIAL.sunPower;
-  defaults.fogSunStrength.value = AERIAL.sunStrength;
+  writeFogChunks();
+  aerialRevision++;
 
-  // and push into materials that already exist
+  if (!scene) return;
   const seen = new Set();
   scene.traverse((o) => {
     const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
     for (const m of mats) {
-      if (!m || seen.has(m)) continue;
+      if (!m || seen.has(m) || m.fog !== true) continue;
       seen.add(m);
-      const u = m.uniforms;
-      if (!u || !u.fogSunColor) continue;
-      u.fogSunColor.value.copy(AERIAL.sunColor);
-      u.fogUpColor.value.copy(AERIAL.upColor);
-      u.fogHeightFalloff.value = AERIAL.heightFalloff;
-      u.fogBaseY.value = AERIAL.baseY;
-      u.fogSunPower.value = AERIAL.sunPower;
-      u.fogSunStrength.value = AERIAL.sunStrength;
+      m.defines = m.defines || {};
+      m.defines.AERIAL_REV = aerialRevision;
+      m.needsUpdate = true;
     }
   });
 }

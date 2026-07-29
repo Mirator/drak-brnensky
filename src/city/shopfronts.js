@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { Rng } from '../rng.js';
 import { getMaterial, CZECH_SIGNS } from '../materials.js';
-import { Batches, label } from './mesh.js';
+import { label } from './mesh.js';
+import { TIER } from './chunks.js';
 
 /**
  * Ground-floor commerce.
@@ -15,7 +16,11 @@ import { Batches, label } from './mesh.js';
  * material would force one material per shop name. Instead the names are
  * drawn into a single 4x4 *atlas* (albedo + emissive) here in city code, and
  * each fascia UV-maps into one cell — so the whole city's signage, in twelve
- * real Czech shop names and several band colours, is one draw call.
+ * real Czech shop names and several band colours, shares one material.
+ *
+ * All of it goes into the chunked detail tier: a shopfront is a ground-level
+ * read, and past about a hundred metres the piers, awning and A-board are a
+ * couple of pixels each.
  */
 
 const SIGN_COLS = 4;
@@ -246,12 +251,10 @@ export class Shopfronts {
       glass: shopGlassAtlas(art),
       awning: awningAtlas(art),
       shutter: shutterTexture(art),
-      pier: getMaterial('stone', { base: '#b9ae9a', mortar: '#9b9083', scale: 1.1 }),
-      metal: getMaterial('paintedMetal', { seed: 1601, color: '#2c3a30' }),
-      wood: getMaterial('wood', { seed: 1602, color: '#4a3524' }),
+      pier: getMaterial('stone', { base: '#cdc4b2', mortar: '#b0a693', scale: 1.4 }),
+      metal: getMaterial('paintedMetal', { seed: 1405, color: '#2b2f34' }),
     };
     label(this.M);
-    this.batches = new Batches();
     this.jobs = [];
     this.count = 0;
   }
@@ -260,11 +263,11 @@ export class Shopfronts {
     this.jobs.push(plot);
   }
 
-  finish(group, collision) {
+  finish(chunks, collision) {
     const rng = this.rng;
-    const B = (m) => this.batches.get(m);
     for (const plot of this.jobs) {
       const { x, z, w, d, rot, storeys, shabby } = plot;
+      const B = (m) => chunks.get(m, x, z, TIER.DETAIL);
       const parter = storeys[0];
       const c = Math.cos(rot), s = Math.sin(rot);
       const ax = c, az = -s;                 // along the frontage
@@ -376,7 +379,6 @@ export class Shopfronts {
 
       this.count++;
     }
-    const meshes = this.batches.finish(group, { castShadow: true, receiveShadow: true });
-    return { meshes, shops: this.count };
+    return { shops: this.count };
   }
 }
