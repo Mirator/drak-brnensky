@@ -291,8 +291,9 @@ export class Player {
     /* ---- horizontal acceleration ---- */
     if (this.dashTime <= 0) {
       if (moving) {
-        this.vel.x += (wx * targetSpeed - this.vel.x) * Math.min(1, ACCEL * dt * 0.35);
-        this.vel.z += (wz * targetSpeed - this.vel.z) * Math.min(1, ACCEL * dt * 0.35);
+        const accelBlend = 1 - Math.exp(-ACCEL * 0.35 * dt);
+        this.vel.x += (wx * targetSpeed - this.vel.x) * accelBlend;
+        this.vel.z += (wz * targetSpeed - this.vel.z) * accelBlend;
       } else {
         const f = Math.exp(-FRICTION * dt);
         this.vel.x *= f;
@@ -335,7 +336,7 @@ export class Player {
     }
     if (input.reload) this.startReload();
 
-    this.aimBlend += ((input.fire || input.aim ? 1 : 0) - this.aimBlend) * Math.min(1, dt * 14);
+    this.aimBlend += ((input.fire || input.aim ? 1 : 0) - this.aimBlend) * (1 - Math.exp(-14 * dt));
 
     if (input.fire && this.fireCd <= 0 && this.reloading <= 0) {
       if (this.ammo > 0) {
@@ -377,7 +378,7 @@ export class Player {
     if (aiming) targetFacing = Math.PI - camYaw;
     else if (moving) targetFacing = Math.atan2(-wx, -wz);
     let diff = ((targetFacing - this.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-    this.facing += diff * Math.min(1, dt * (aiming ? 18 : 11));
+    this.facing += diff * (1 - Math.exp(-dt * (aiming ? 18 : 11)));
 
     /* ---- animation ---- */
     const hs = Math.hypot(this.vel.x, this.vel.z);

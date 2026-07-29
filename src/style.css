@@ -397,6 +397,14 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.07); color: #fff; box-sha
 
 .pause-stats b { color: var(--amber); font-weight: 700; }
 
+#resume-hint {
+  min-height: 1.4em;
+  margin: -16px 0 18px;
+  color: var(--amber);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
 /* ---------------- LOADING ---------------- */
 #loading {
   position: fixed;
@@ -414,3 +422,78 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.07); color: #fff; box-sha
 .load-bar { height: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
 #load-fill { height: 100%; width: 0%; background: var(--amber); transition: width 0.25s; }
 .load-step { margin-top: 10px; font-family: var(--mono); font-size: 11px; color: rgba(242, 237, 228, 0.4); }
+
+@media (max-width: 760px) {
+  #menu {
+    place-items: start center;
+    overflow-y: auto;
+    padding: 16px 0;
+  }
+
+  .menu-card {
+    padding: 28px 24px 24px;
+  }
+
+  .menu-title {
+    font-size: clamp(42px, 13vw, 56px);
+    margin-bottom: 12px;
+  }
+
+  .menu-sub {
+    margin-bottom: 14px;
+    font-size: 14px;
+    line-height: 1.4;
+  }
+
+  .controls-grid {
+    gap: 5px;
+    margin-bottom: 16px;
+    padding: 10px 0;
+  }
+
+  .menu-foot { margin-top: 10px; }
+
+  #compass { display: none; }
+
+  .hud-top-left {
+    top: 16px;
+    left: 16px;
+    width: min(220px, calc(100vw - 150px));
+  }
+
+  .hud-top-right {
+    top: 16px;
+    right: 12px;
+  }
+
+  .stat .k { display: none; }
+
+  .hud-objective {
+    top: 88px;
+    right: 12px;
+    max-width: min(200px, 56vw);
+  }
+
+  #minimap {
+    left: 12px;
+    bottom: 12px;
+    width: 160px;
+    height: 160px;
+  }
+
+  #minimap canvas {
+    width: 160px;
+    height: 160px;
+  }
+
+  .hud-bottom-right {
+    right: 12px;
+    bottom: 18px;
+  }
+
+  #ammo { font-size: 34px; }
+  #ammo #ammo-max { font-size: 21px; }
+  .ammo-sep { font-size: 24px; }
+  #weapon-name { max-width: 165px; font-size: 9px; }
+  #toast-stack { width: calc(100vw - 32px); }
+}

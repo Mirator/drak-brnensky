@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="cs">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -65,6 +65,8 @@
         <div><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd><span>pohyb</span></div>
         <div><kbd>MYŠ</kbd><span>rozhled</span></div>
         <div><kbd>LMB</kbd><span>střelba</span></div>
+        <div><kbd>RMB</kbd><span>míření</span></div>
+        <div><kbd>KOLEČKO</kbd><span>vzdálenost kamery</span></div>
         <div><kbd>SHIFT</kbd><span>sprint</span></div>
         <div><kbd>MEZERNÍK</kbd><span>skok</span></div>
         <div><kbd>CTRL</kbd><span>úhyb / dash</span></div>
@@ -84,6 +86,7 @@
     <div class="overlay-card">
       <h2>PAUZA</h2>
       <div class="pause-stats" id="pause-stats"></div>
+      <div id="resume-hint" aria-live="polite"></div>
       <button id="btn-resume">POKRAČOVAT</button>
       <button id="btn-restart" class="ghost">RESTART</button>
     </div>

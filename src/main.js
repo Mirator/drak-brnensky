@@ -551,15 +551,20 @@ function pauseGame() {
   if (state.mode !== 'playing') return;
   state.mode = 'paused';
   input.releaseLock();
+  document.getElementById('resume-hint').textContent = '';
   document.getElementById('pause-stats').innerHTML = statsHtml();
   pauseEl.classList.remove('hidden');
 }
 
-function resumeGame() {
+async function resumeGame() {
   if (state.mode !== 'paused') return;
+  const locked = await input.requestLock();
+  if (!locked || state.mode !== 'paused') {
+    document.getElementById('resume-hint').textContent = 'Klikni na POKRAČOVAT pro opětovné uzamčení myši.';
+    return;
+  }
   state.mode = 'playing';
   pauseEl.classList.add('hidden');
-  input.requestLock();
   audio.resume();
 }
 
@@ -617,6 +622,7 @@ addEventListener('keydown', (e) => {
 });
 
 addEventListener('resize', () => {
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);

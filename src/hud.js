@@ -2,6 +2,7 @@ import { MAP_SIZE, HALF } from './city.js';
 
 /* The compass strip is 15deg per 60px tick; the visible window is 420px wide. */
 const COMPASS_HALF = 210;
+const COMPASS_TICK_HALF = 30;
 
 /**
  * All the DOM-side chrome: bars, ammo, compass, minimap, toasts, boss bar.
@@ -132,7 +133,7 @@ export class Hud {
 
     // compass: put the tick for the current bearing under the needle
     const bearing = (((state.camYaw * 180) / Math.PI + 180) % 360 + 360) % 360;
-    const x = COMPASS_HALF - (bearing + 180) * this.pxPerDeg;
+    const x = COMPASS_HALF - COMPASS_TICK_HALF - (bearing + 180) * this.pxPerDeg;
     e.compass.style.transform = `translateX(${x.toFixed(1)}px)`;
   }
 

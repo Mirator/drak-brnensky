@@ -30,7 +30,7 @@ export class ChaseCamera {
     this.pitch -= dy * sensitivity;
     const lim = Math.PI / 2 - 0.12;
     this.pitch = Math.max(-lim, Math.min(lim, this.pitch));
-    this.yaw = ((this.yaw + Math.PI) % (Math.PI * 2)) - Math.PI;
+    this.yaw -= Math.PI * 2 * Math.round(this.yaw / (Math.PI * 2));
   }
 
   zoom(steps) {
@@ -56,7 +56,7 @@ export class ChaseCamera {
     this.target.addScaledVector(right, this.shoulder * 0.55);
 
     const desired = aiming ? this.wantDist * 0.68 : this.wantDist;
-    this.dist += (desired - this.dist) * Math.min(1, dt * 8);
+    this.dist += (desired - this.dist) * (1 - Math.exp(-8 * dt));
 
     // where the camera wants to sit
     _p.copy(this.target).addScaledVector(fwd, -this.dist).addScaledVector(right, this.shoulder * 0.45);
@@ -74,7 +74,7 @@ export class ChaseCamera {
     if (this._first) { this._smooth.copy(_p); this._first = false; }
     // faster catch-up when the camera is being pushed by geometry
     const lag = hit !== Infinity ? 22 : 13;
-    this._smooth.lerp(_p, Math.min(1, dt * lag));
+    this._smooth.lerp(_p, 1 - Math.exp(-lag * dt));
 
     this.camera.position.copy(this._smooth);
 
@@ -94,7 +94,7 @@ export class ChaseCamera {
     // fov breathing: narrow while aiming, wide while sprinting
     const speed = Math.hypot(player.vel.x, player.vel.z);
     const targetFov = this.fovBase + (speed > 8 ? 6 : 0) - (aiming ? 12 : 0);
-    this.camera.fov += (targetFov - this.camera.fov) * Math.min(1, dt * 6);
+    this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-6 * dt));
     this.camera.updateProjectionMatrix();
 
     // the point the crosshair is over: first hit along the camera ray

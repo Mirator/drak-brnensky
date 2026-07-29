@@ -45,8 +45,14 @@ export class Input {
     });
   }
 
-  requestLock() {
-    if (!this.locked) this.canvas.requestPointerLock();
+  async requestLock() {
+    if (this.locked) return true;
+    try {
+      await this.canvas.requestPointerLock();
+      return document.pointerLockElement === this.canvas;
+    } catch {
+      return false;
+    }
   }
   releaseLock() {
     if (this.locked) document.exitPointerLock();
