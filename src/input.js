@@ -22,6 +22,7 @@ export class Input {
     addEventListener('blur', () => { this.keys.clear(); this.mouse.left = this.mouse.right = false; });
 
     canvas.addEventListener('mousedown', (e) => {
+      if (!this.locked) return;
       if (e.button === 0) this.mouse.left = true;
       if (e.button === 2) this.mouse.right = true;
     });
