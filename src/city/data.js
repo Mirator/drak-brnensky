@@ -15,6 +15,14 @@ export class Heightfield {
     this.verticalDatum = verticalDatum;
     this.scale = scale;
     this.samples = samples;
+    let minSample = Infinity;
+    let maxSample = -Infinity;
+    for (let i = 0; i < samples.length; i++) {
+      minSample = Math.min(minSample, samples[i]);
+      maxSample = Math.max(maxSample, samples[i]);
+    }
+    this.minHeight = minSample * scale;
+    this.maxHeight = maxSample * scale;
   }
 
   contains(x, z) {
@@ -96,7 +104,12 @@ export async function loadBrnoData() {
     cached = Promise.all([
       fetch(MAP_URL).then((r) => checked(r, 'Brno map')).then((r) => r.json()),
       fetch(TERRAIN_URL).then((r) => checked(r, 'Brno terrain')).then((r) => r.arrayBuffer()),
-    ]).then(([map, terrain]) => ({ map, terrain: decodeTerrain(terrain) }));
+    ])
+      .then(([map, terrain]) => ({ map, terrain: decodeTerrain(terrain) }))
+      .catch((error) => {
+        cached = null;
+        throw error;
+      });
   }
   return cached;
 }

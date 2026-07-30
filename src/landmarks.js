@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { Builder, palette, PROFILE } from './landmarks/detail.js';
+import {
+  Builder, palette, PROFILE, transformLandmarkPoint,
+} from './landmarks/detail.js';
 import * as petrov from './landmarks/petrov.js';
 import * as spilberk from './landmarks/spilberk.js';
 import * as radnice from './landmarks/radnice.js';
@@ -94,7 +96,9 @@ export function buildLandmarks(group, collision, { stoneMat, roofMat, rng, trans
   };
   for (const [key, cluster] of Object.entries(transformInfo)) {
     const tr = transforms[cluster];
-    if (tr && info[key]?.pos) info[key].pos.add(new THREE.Vector3(tr.x || 0, tr.y || 0, tr.z || 0));
+    if (tr && info[key]?.pos) {
+      transformLandmarkPoint(info[key].pos.x, info[key].pos.y, info[key].pos.z, tr, info[key].pos);
+    }
   }
 
   const lods = b.finish(group);

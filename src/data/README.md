@@ -16,5 +16,6 @@ Terrain Model of the Czech Republic, 5th generation (DMR 5G):
 - https://geoportal.cuzk.gov.cz/
 
 The two datasets remain separate and are combined only by the game at runtime.
-Regenerate them with `npm run import:brno`. The game itself performs no map or
-terrain network requests.
+`brno-checksums.json` records their SHA-256 values and pinned source date.
+Regenerate them with `npm run import:brno`; the bare command is date-pinned.
+The game itself performs no map or terrain network requests.

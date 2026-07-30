@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import proj4 from 'proj4';
 import osmtogeojson from 'osmtogeojson';
@@ -11,6 +12,8 @@ const DATA_DIR = path.join(ROOT, 'src', 'data');
 const MAP_PATH = path.join(DATA_DIR, 'brno-map.json');
 const TERRAIN_PATH = path.join(DATA_DIR, 'brno-terrain.bin');
 const LAYOUT_PATH = path.join(DATA_DIR, 'brno-layout.js');
+const CHECKSUM_PATH = path.join(DATA_DIR, 'brno-checksums.json');
+export const PINNED_SOURCE_DATE = '2026-07-30T07:34:01Z';
 
 export const CONFIG = Object.freeze({
   version: 1,
@@ -46,11 +49,17 @@ const PLACE_SPECS = {
   orloj: { name: 'Brněnský orloj', id: 'node/1052733045', match: /brněnský orloj/i, fallback: [16.6085914, 49.1947998] },
 };
 
-function parseArgs(argv) {
-  const out = { date: null, osmFile: null, noTerrain: false };
+export function parseArgs(argv) {
+  const out = {
+    date: PINNED_SOURCE_DATE, osmFile: null, noTerrain: false, compactExisting: false,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--no-terrain') out.noTerrain = true;
+    else if (arg === '--compact-existing') {
+      out.compactExisting = true;
+      out.noTerrain = true;
+    }
     else if (arg.startsWith('--date=')) out.date = arg.slice(7);
     else if (arg === '--date') out.date = argv[++i];
     else if (arg.startsWith('--osm-file=')) out.osmFile = arg.slice(11);
@@ -273,18 +282,18 @@ function lineDistance(point, features) {
   return best;
 }
 
-function chooseStart(areas, buildings, trams, places) {
+export function chooseStart(areas, buildings, trams, places) {
   const square = areas.find((area) => area.id === `way/${CONFIG.origin.osmWay}`);
-  // Small unit fixtures need not reproduce the entire square relation; the
-  // production snapshot is validated separately before it is committed.
-  if (!square) return { x: 0, z: 0, face: 'column', clearance: 0 };
   const candidates = [];
   for (let z = -70; z <= 70; z++) {
     for (let x = -70; x <= 70; x++) candidates.push([x, z]);
   }
   candidates.sort((a, b) => Math.hypot(...a) - Math.hypot(...b) || a[1] - b[1] || a[0] - b[0]);
   for (const point of candidates) {
-    if (!square.polygons.some((polygon) => pointInPolygon(point, polygon))) continue;
+    const inStartArea = square
+      ? square.polygons.some((polygon) => pointInPolygon(point, polygon))
+      : Math.hypot(point[0] - places.svoboda.x, point[1] - places.svoboda.z) <= 30;
+    if (!inStartArea) continue;
     if (lineDistance(point, trams) < 2.2) continue;
     if (Math.hypot(point[0] - places.column.x, point[1] - places.column.z) < 2.2) continue;
     if (Math.hypot(point[0] - places.orloj.x, point[1] - places.orloj.z) < 2.2) continue;
@@ -317,10 +326,6 @@ function normalizedBuilding(feature, tags) {
     polygons,
     height: buildingHeight(tags, id),
     minHeight: Math.max(0, numeric(tags.min_height) || 0),
-    levels: numeric(tags['building:levels']),
-    material: tags['building:material'] || tags['facade:material'] || null,
-    roof: tags['roof:shape'] || null,
-    name: named || null,
     part: Boolean(tags['building:part']),
     landmark,
   };
@@ -361,10 +366,6 @@ export function normalizeOsm(osm, sourceDate = null) {
           kind: tags.highway,
           name: name || null,
           width: roadWidth(tags),
-          surface: tags.surface || null,
-          lanes: numeric(tags.lanes),
-          bridge: tags.bridge === 'yes',
-          tunnel: tags.tunnel === 'yes',
         });
       }
     }
@@ -381,13 +382,14 @@ export function normalizeOsm(osm, sourceDate = null) {
   }
 
   const parts = buildings.filter((b) => b.part);
-  const stable = (a, b) => a.id.localeCompare(b.id)
-    || JSON.stringify(a.points || a.polygons).localeCompare(JSON.stringify(b.points || b.polygons));
+  const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const stable = (a, b) => compareStrings(a.id, b.id)
+    || compareStrings(JSON.stringify(a.points || a.polygons), JSON.stringify(b.points || b.polygons));
   const filteredBuildings = buildings.filter((b) => b.part || !hasPart(b, parts)).sort(stable);
   roads.sort(stable);
   trams.sort(stable);
   areas.sort(stable);
-  candidates.sort((a, b) => osmId(a.feature).localeCompare(osmId(b.feature)));
+  candidates.sort((a, b) => compareStrings(osmId(a.feature), osmId(b.feature)));
   const places = {};
   for (const [key, spec] of Object.entries(PLACE_SPECS)) {
     const match = candidates.find((c) => osmId(c.feature) === spec.id && c.position)
@@ -579,18 +581,38 @@ async function fetchTerrain() {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  let existingMap = null;
   let previousTerrain = null;
   if (args.noTerrain) {
     try {
-      previousTerrain = JSON.parse(await fs.readFile(MAP_PATH, 'utf8')).terrain || null;
+      existingMap = JSON.parse(await fs.readFile(MAP_PATH, 'utf8'));
+      previousTerrain = existingMap.terrain || null;
     } catch {
       // First import has nothing to preserve; the validation below is explicit.
     }
   }
-  const osm = args.osmFile
-    ? JSON.parse(await fs.readFile(path.resolve(args.osmFile), 'utf8'))
-    : await fetchOsm(args.date);
-  const map = normalizeOsm(osm, args.date);
+  let map;
+  if (args.compactExisting) {
+    if (!existingMap) throw new Error('--compact-existing requires an existing map artifact');
+    map = existingMap;
+    for (const road of map.roads) {
+      delete road.surface;
+      delete road.lanes;
+      delete road.bridge;
+      delete road.tunnel;
+    }
+    for (const building of map.buildings) {
+      delete building.levels;
+      delete building.material;
+      delete building.roof;
+      delete building.name;
+    }
+  } else {
+    const osm = args.osmFile
+      ? JSON.parse(await fs.readFile(path.resolve(args.osmFile), 'utf8'))
+      : await fetchOsm(args.date);
+    map = normalizeOsm(osm, args.date);
+  }
   await fs.mkdir(DATA_DIR, { recursive: true });
   if (!args.noTerrain) {
     const terrain = await fetchTerrain();
@@ -601,7 +623,8 @@ async function main() {
   } else {
     throw new Error('--no-terrain requires an existing map artifact with terrain metadata');
   }
-  await fs.writeFile(MAP_PATH, `${JSON.stringify(map)}\n`);
+  const mapSource = `${JSON.stringify(map)}\n`;
+  await fs.writeFile(MAP_PATH, mapSource);
   const layoutSource = `// Generated by scripts/import-brno-map.mjs. Do not edit by hand.
 export const BRNO_MAP_SIZE = ${CONFIG.size};
 export const BRNO_ORIGIN = ${JSON.stringify(map.metadata.origin)};
@@ -609,6 +632,16 @@ export const BRNO_PLACES = ${JSON.stringify(map.places, null, 2)};
 export const BRNO_START = ${JSON.stringify(map.start)};
 `;
   await fs.writeFile(LAYOUT_PATH, layoutSource);
+  const terrainBuffer = await fs.readFile(TERRAIN_PATH);
+  const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+  await fs.writeFile(CHECKSUM_PATH, `${JSON.stringify({
+    schema: 1,
+    sourceDate: map.metadata.sourceDate,
+    sha256: {
+      'brno-map.json': sha256(mapSource),
+      'brno-terrain.bin': sha256(terrainBuffer),
+    },
+  }, null, 2)}\n`);
   console.log(JSON.stringify({
     map: path.relative(ROOT, MAP_PATH),
     terrain: args.noTerrain ? 'unchanged' : path.relative(ROOT, TERRAIN_PATH),

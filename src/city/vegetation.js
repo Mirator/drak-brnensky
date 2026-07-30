@@ -2,7 +2,12 @@ import * as THREE from 'three';
 import { getMaterial } from '../materials.js';
 import { partsGeometry, label } from './mesh.js';
 import { TIER, InstanceGrid } from './chunks.js';
-import { HALF, FLAG, ROADS, PLAZAS, segments } from './layout.js';
+import {
+  HALF, FLAG,
+  ROADS as DEFAULT_ROADS,
+  PLAZAS as DEFAULT_PLAZAS,
+  segments,
+} from './layout.js';
 import { parkPaths } from './plan.js';
 
 /**
@@ -71,7 +76,9 @@ function shrubGeometry() {
   return g;
 }
 
-export function buildVegetation(group, collision, { rng, chunks }) {
+export function buildVegetation(group, collision, { rng, chunks, layout = null }) {
+  const roads = layout?.roads || DEFAULT_ROADS;
+  const plazas = layout?.plazas || DEFAULT_PLAZAS;
   const trunkMat = getMaterial('wood', { seed: 1801, color: '#42332a' });
   const hedgeMat = new THREE.MeshStandardMaterial({ color: 0x2c4a26, roughness: 0.95, flatShading: true });
   const shrubMat = new THREE.MeshStandardMaterial({ color: 0x33562c, roughness: 0.95, flatShading: true });
@@ -108,7 +115,7 @@ export function buildVegetation(group, collision, { rng, chunks }) {
   };
 
   /* ---- parks: mixed species, undergrowth, hedged edges ---- */
-  for (const p of PLAZAS) {
+  for (const p of plazas) {
     const [cx, cz, w, d] = p.r;
     if (p.type !== FLAG.PARK) continue;
     const arboretum = p.name === 'denisovy' || p.name === 'spilberk';
@@ -157,7 +164,7 @@ export function buildVegetation(group, collision, { rng, chunks }) {
   }
 
   /* ---- avenue trees along the wide streets ---- */
-  for (const road of ROADS) {
+  for (const road of roads) {
     if (road.w < 14) continue;
     for (const seg of segments(road.pts)) {
       for (let t = 12; t < seg.len - 8; t += rng.float(20, 32)) {

@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { Batch } from './mesh.js';
 import {
-  FLAG, FlagGrid, GRID_RES, HALF, MAP_SIZE, PLACES, PLAZAS, ROADS,
-  TRAM_ROUTES, TRAM_STOPS,
+  FLAG, FlagGrid, GRID_RES, HALF, MAP_SIZE, addRotatedBox,
 } from './layout.js';
+import { Chunks, TIER } from './chunks.js';
 import { getMaterial } from '../materials.js';
 
 const qPoint = ([x, z]) => [x / 10, z / 10];
@@ -48,47 +48,54 @@ function roadStyle(kind) {
   return 'asphalt';
 }
 
-/** Replace the legacy compressed plan arrays in-place so props and trams reuse the imported plan. */
+const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * Build the geospatial street-life layout without mutating the legacy module
+ * fixtures. This keeps buildCity re-entrant and prevents the geospatial path
+ * from changing a later procedural build in the same process.
+ */
 export function installImportedLayout(map) {
-  for (const [key, value] of Object.entries(map.places)) {
-    PLACES[key] = { ...value };
-  }
+  const places = Object.fromEntries(
+    Object.entries(map.places).map(([key, value]) => [key, { ...value }]),
+  );
 
   const propRoads = map.roads
     .filter((road) => road.name || road.width >= 9)
-    .sort((a, b) => b.width - a.width || String(a.id).localeCompare(String(b.id)))
+    .sort((a, b) => b.width - a.width || compareStrings(String(a.id), String(b.id)))
     .slice(0, 120);
-  ROADS.splice(0, ROADS.length, ...propRoads.map((road) => ({
+  const roads = propRoads.map((road) => ({
     name: road.name || road.kind,
     w: road.width,
     tram: false,
     paving: roadStyle(road.kind),
     shops: road.kind === 'pedestrian' ? 0.8 : 0,
     pts: qLine(road.points),
-  })));
+  }));
 
-  PLAZAS.splice(0, PLAZAS.length);
+  const plazas = [];
   for (const area of map.areas) {
     if (area.kind !== 'park' && area.kind !== 'plaza' && area.kind !== 'pedestrian') continue;
     for (const poly of decodedPolygons(area)) {
       const b = boundsOfPolygon(poly);
-      PLAZAS.push({
+      plazas.push({
         r: [(b.minX + b.maxX) / 2, (b.minZ + b.maxZ) / 2, b.maxX - b.minX, b.maxZ - b.minZ],
         type: area.kind === 'park' ? FLAG.PARK : FLAG.PLAZA,
         name: area.name || area.id,
         paving: area.kind === 'park' ? null : 'fan',
       });
-      if (PLAZAS.length >= 60) break;
+      if (plazas.length >= 60) break;
     }
-    if (PLAZAS.length >= 60) break;
+    if (plazas.length >= 60) break;
   }
 
-  const routes = stitchLines(map.trams.map((tram) => qLine(tram.points)));
-  TRAM_ROUTES.splice(0, TRAM_ROUTES.length, ...routes.slice(0, 5));
-  TRAM_STOPS.splice(0, TRAM_STOPS.length,
-    ...['ceska', 'svoboda', 'zelnyTrh', 'nadrazi'].filter((key) => PLACES[key]).map((key) => ({
-      name: PLACES[key].name, x: PLACES[key].x, z: PLACES[key].z, rot: 0,
-    })));
+  const tramRoutes = stitchLines(map.trams.map((tram) => qLine(tram.points))).slice(0, 5);
+  const tramStops = ['ceska', 'svoboda', 'zelnyTrh', 'nadrazi']
+    .filter((key) => places[key])
+    .map((key) => ({
+      name: places[key].name, x: places[key].x, z: places[key].z, rot: 0,
+    }));
+  return { places, roads, plazas, tramRoutes, tramStops };
 }
 
 /** Join unordered Overpass way fragments into a small number of useful continuous tram routes. */
@@ -127,7 +134,7 @@ function areaMaterial(kind) {
   return getMaterial('cobbleFan');
 }
 
-function addDrapedPolygon(batch, poly, terrain, lift = 0.045) {
+function addDrapedPolygon(batchFor, poly, terrain, lift = 0.045) {
   const contour = poly[0].map(([x, z]) => new THREE.Vector2(x, z));
   const holes = poly.slice(1).map((ring) => ring.map(([x, z]) => new THREE.Vector2(x, z)));
   const points = contour.concat(...holes);
@@ -135,7 +142,12 @@ function addDrapedPolygon(batch, poly, terrain, lift = 0.045) {
   for (const [a, b, c] of faces) {
     const va = points[a]; const vb = points[b]; const vc = points[c];
     const p = (v) => [v.x, terrain.heightAt(v.x, v.y) + lift, v.y];
-    batch.tri(p(vc), p(vb), p(va), [vc.x / 8, vc.y / 8], [vb.x / 8, vb.y / 8], [va.x / 8, va.y / 8]);
+    const cx = (va.x + vb.x + vc.x) / 3;
+    const cz = (va.y + vb.y + vc.y) / 3;
+    batchFor(cx, cz).tri(
+      p(vc), p(vb), p(va),
+      [vc.x / 8, vc.y / 8], [vb.x / 8, vb.y / 8], [va.x / 8, va.y / 8],
+    );
   }
 }
 
@@ -155,15 +167,13 @@ function addRoad(batch, points, width, terrain, lift = 0.06, lateralOffset = 0) 
   }
 }
 
-export function buildImportedPlan(group, map, terrain) {
+export function buildImportedPlan(group, map, terrain, chunks = null) {
   const flags = new FlagGrid();
   flags.fill(FLAG.FREE);
-  const batches = new Map();
-  const batchFor = (mat) => {
-    let batch = batches.get(mat);
-    if (!batch) batches.set(mat, (batch = new Batch()));
-    return batch;
-  };
+  const targetChunks = chunks || new Chunks({ cells: 11, detailRadius: 180 });
+  const ownsChunks = !chunks;
+  const before = targetChunks.entries.size;
+  const batchFor = (mat, x, z) => targetChunks.get(mat, x, z, TIER.NOSHADOW);
 
   for (const area of map.areas) {
     const flag = area.kind === 'park' ? FLAG.PARK
@@ -171,7 +181,12 @@ export function buildImportedPlan(group, map, terrain) {
     const mat = areaMaterial(area.kind);
     for (const poly of decodedPolygons(area)) {
       paintPolygon(flags, poly, flag);
-      addDrapedPolygon(batchFor(mat), poly, terrain, area.kind === 'water' ? 0.02 : 0.045);
+      addDrapedPolygon(
+        (x, z) => batchFor(mat, x, z),
+        poly,
+        terrain,
+        area.kind === 'water' ? 0.02 : 0.045,
+      );
     }
   }
 
@@ -180,7 +195,11 @@ export function buildImportedPlan(group, map, terrain) {
   for (const road of map.roads) {
     const points = qLine(road.points);
     flags.line(points, road.width, FLAG.ROAD);
-    addRoad(batchFor(roadStyle(road.kind) === 'sett' ? cobble : asphalt), points, road.width, terrain);
+    const mat = roadStyle(road.kind) === 'sett' ? cobble : asphalt;
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1]; const b = points[i];
+      addRoad(batchFor(mat, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2), [a, b], road.width, terrain);
+    }
   }
 
   const railMat = getMaterial('paintedMetal', { seed: 25833, color: '#7b7770' });
@@ -188,12 +207,12 @@ export function buildImportedPlan(group, map, terrain) {
     const points = qLine(tram.points);
     flags.line(points, 3.2, FLAG.TRACK);
     for (const offset of [-0.72, 0.72]) {
-      const rail = new Batch();
-      addRoad(rail, points, 0.09, terrain, 0.105, offset);
-      const geo = rail.geometry();
-      if (geo) {
-        const mesh = new THREE.Mesh(geo, railMat);
-        mesh.receiveShadow = true; mesh.castShadow = false; group.add(mesh);
+      for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1]; const b = points[i];
+        addRoad(
+          batchFor(railMat, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2),
+          [a, b], 0.09, terrain, 0.105, offset,
+        );
       }
     }
   }
@@ -202,17 +221,8 @@ export function buildImportedPlan(group, map, terrain) {
     for (const poly of decodedPolygons(building)) paintPolygon(flags, poly, FLAG.RESERVED);
   }
 
-  let meshes = 0;
-  for (const [material, batch] of batches) {
-    const geometry = batch.geometry();
-    if (!geometry) continue;
-    const mesh = new THREE.Mesh(geometry, material);
-    mesh.name = `map:${material.name || material.type}`;
-    mesh.receiveShadow = true;
-    mesh.castShadow = false;
-    group.add(mesh);
-    meshes++;
-  }
+  const meshes = targetChunks.entries.size - before;
+  if (ownsChunks) targetChunks.finish(group);
   return { flags: flags.data, meshes };
 }
 
@@ -273,14 +283,22 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks) {
             [ax, ay, az], [bx, by, bz], [bx, top, bz], [ax, top, az],
             [0, 0], [len / 3.1, 0], [len / 3.1, height / 3.4], [0, height / 3.4],
           );
-          // One tight AABB per imported wall edge. Slicing every diagonal
-          // facade would multiply the historic centre into hundreds of
-          // thousands of colliders with no gameplay benefit.
-          collision.add(
-            (ax + bx) / 2, (az + bz) / 2,
-            Math.abs(bx - ax) + 0.38, Math.abs(bz - az) + 0.38,
-            Math.min(ay, by), top - Math.min(ay, by), 'building', 'stone',
-          );
+          const dx = bx - ax; const dz = bz - az;
+          const oblique = Math.min(Math.abs(dx), Math.abs(dz)) / len > 0.18;
+          if (oblique && len > 4) {
+            addRotatedBox(
+              collision,
+              (ax + bx) / 2, (az + bz) / 2,
+              len, 0.38, Math.atan2(-dz, dx),
+              Math.min(ay, by), top - Math.min(ay, by), 'building', 'stone',
+            );
+          } else {
+            collision.add(
+              (ax + bx) / 2, (az + bz) / 2,
+              Math.abs(dx) + 0.38, Math.abs(dz) + 0.38,
+              Math.min(ay, by), top - Math.min(ay, by), 'building', 'stone',
+            );
+          }
         }
       }
 
@@ -387,8 +405,18 @@ export class NavigationField {
     this.width = Math.ceil(MAP_SIZE / cellSize);
     this.distance = new Int32Array(this.width * this.width);
     this.distance.fill(-1);
+    this.walkableGrid = new Uint8Array(this.distance.length);
+    for (let iz = 0; iz < this.width; iz++) {
+      for (let ix = 0; ix < this.width; ix++) {
+        const [x, z] = this.worldAt(ix, iz);
+        this.walkableGrid[iz * this.width + ix] = (
+          this.flagAt(x, z) !== FLAG.RESERVED && this.terrain.slopeAt(x, z) <= 0.62
+        ) ? 1 : 0;
+      }
+    }
     this.targetX = Infinity;
     this.targetZ = Infinity;
+    this.rebuildThreshold = cellSize * 6;
   }
 
   indexAt(x, z) {
@@ -405,8 +433,7 @@ export class NavigationField {
   }
 
   walkable(ix, iz) {
-    const [x, z] = this.worldAt(ix, iz);
-    return this.flagAt(x, z) !== FLAG.RESERVED && this.terrain.slopeAt(x, z) <= 0.62;
+    return this.walkableGrid[iz * this.width + ix] === 1;
   }
 
   rebuild(x, z) {
@@ -439,7 +466,7 @@ export class NavigationField {
   }
 
   directionAt(x, z, targetX = this.targetX, targetZ = this.targetZ) {
-    if (Math.hypot(targetX - this.targetX, targetZ - this.targetZ) > this.cellSize * 1.5) {
+    if (Math.hypot(targetX - this.targetX, targetZ - this.targetZ) > this.rebuildThreshold) {
       this.rebuild(targetX, targetZ);
     }
     const [ix, iz, index] = this.indexAt(x, z);
@@ -487,12 +514,14 @@ export function drapeChildren(group, firstChild, terrain) {
         object.computeBoundingSphere();
         return;
       }
-      if (Math.abs(object.position.x) > 0.001 || Math.abs(object.position.z) > 0.001) {
+      const attr = object.geometry?.attributes?.position;
+      // Direct meshes use local geometry even when legitimately positioned at
+      // world origin. World-baked batches must opt into vertex draping.
+      if (object.userData?.terrainDrape !== 'vertices') {
         object.position.y += terrain.heightAt(object.position.x, object.position.z);
         object.updateMatrix();
         return;
       }
-      const attr = object.geometry?.attributes?.position;
       if (!attr) return;
       for (let i = 0; i < attr.count; i++) {
         const x = attr.getX(i); const z = attr.getZ(i);

@@ -31,9 +31,10 @@ let lastTime = performance.now();
 const GAMEPLAY_SEED = 90210;
 let gameplayRng = new Rng(GAMEPLAY_SEED);
 const AUTOMATED_QA = typeof navigator !== 'undefined' && navigator.webdriver;
+const PRODUCTION_RENDER_QA = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('qaRenderer') === 'production';
 const AUTOMATED_WAVE = AUTOMATED_QA && typeof location !== 'undefined'
-  ? Number(new URLSearchParams(location.search).get('qaWave')
-    || (location.pathname.endsWith('/qaWave1') ? 1 : 0))
+  ? Number(new URLSearchParams(location.search).get('qaWave') || 0)
   : 0;
 let pendingStart = false;
 
@@ -449,7 +450,7 @@ function createRenderer() {
  */
 function verifyPostStack() {
   if (!render) return;
-  if (AUTOMATED_QA) {
+  if (AUTOMATED_QA && !PRODUCTION_RENDER_QA) {
     postStackOk = false;
     postStackProbe = { automatedQa: true, reason: 'CPU-bounded direct-render path' };
     return;
@@ -683,7 +684,7 @@ async function boot() {
 
     await step(95, 'post-processing');
     render = createPostFX({ renderer, scene, camera, lighting, quality: DEFAULT_QUALITY });
-    if (AUTOMATED_QA) render.setQuality('low');
+    if (AUTOMATED_QA && !PRODUCTION_RENDER_QA) render.setQuality('low');
 
     /* Soft particles. The linear-depth resolve skips itself when no pass
      * wants it (DOF is aim-only, and both readers are off on `low`), so an
@@ -716,7 +717,7 @@ async function boot() {
     // SwiftShader-based automated QA is CPU rendering. Deferring its shader
     // compilation to the first requested frame keeps it bounded; desktop GPU
     // play still receives the usual warm-up.
-    if (!AUTOMATED_QA) renderer.compile(scene, camera);
+    if (!AUTOMATED_QA || PRODUCTION_RENDER_QA) renderer.compile(scene, camera);
     verifyPostStack();
 
     await step(100, 'hotovo');
@@ -729,7 +730,7 @@ async function boot() {
       if (AUTOMATED_WAVE > 0) startWave(AUTOMATED_WAVE);
     }
     lastTime = performance.now();
-    renderer.setAnimationLoop(AUTOMATED_QA ? null : tick);
+    renderer.setAnimationLoop(AUTOMATED_QA && !PRODUCTION_RENDER_QA ? null : tick);
   } catch (error) {
     showBootError(error);
   }
@@ -1060,6 +1061,7 @@ const _tmp3 = new THREE.Vector3();
 /** What the menu backdrop camera orbits around, and what it focuses on. */
 const MENU_LOOK = new THREE.Vector3(-30, 24, 20);
 let smoothFps = 60;
+const qaFpsSamples = [];
 
 function tick() {
   const now = performance.now();
@@ -1067,6 +1069,19 @@ function tick() {
   lastTime = now;
   advance(Math.min(0.05, raw));
   smoothFps += (1 / raw - smoothFps) * 0.05;
+  if (PRODUCTION_RENDER_QA && state.mode === 'playing' && raw < 0.25) {
+    qaFpsSamples.push(1 / raw);
+    if (qaFpsSamples.length > 7200) qaFpsSamples.shift();
+    if (import.meta.env.DEV && qaFpsSamples.length % 30 === 0) {
+      const ordered = [...qaFpsSamples].sort((a, b) => a - b);
+      canvas.dataset.qaMedianFps = ordered[Math.floor(ordered.length / 2)].toFixed(1);
+      canvas.dataset.qaFpsSamples = String(qaFpsSamples.length);
+      canvas.dataset.qaQuality = render?.stats().quality || 'unknown';
+      canvas.dataset.qaPostStack = String(postStackOk);
+      canvas.dataset.qaCalls = String(renderer.info.render.calls);
+      canvas.dataset.qaTriangles = String(renderer.info.render.triangles);
+    }
+  }
 }
 
 function advance(dt, shouldRender = true) {
@@ -1354,7 +1369,7 @@ boot();
  * Debug handle. `advance` lets an automated harness step the whole
  * simulation deterministically (rAF is paused in background tabs).
  * ------------------------------------------------------------------ */
-window.advanceTime = (ms) => {
+const advanceTimeForQa = (ms) => {
   let remaining = Math.max(0, Number(ms) || 0) / 1000;
   while (remaining > 0) {
     const dt = Math.min(1 / 60, remaining);
@@ -1363,7 +1378,7 @@ window.advanceTime = (ms) => {
   }
 };
 
-window.render_game_to_text = () => {
+const renderGameToText = () => {
   const p = player?.pos;
   let currentPlace = null;
   let nearest = Infinity;
@@ -1373,6 +1388,8 @@ window.render_game_to_text = () => {
       if (distance < nearest) { nearest = distance; currentPlace = { key, name: place.name, distance: +distance.toFixed(1) }; }
     }
   }
+  const sortedFps = qaFpsSamples.length ? [...qaFpsSamples].sort((a, b) => a - b) : [];
+  const medianFps = sortedFps.length ? sortedFps[Math.floor(sortedFps.length / 2)] : null;
   return JSON.stringify({
     coordinateConvention: '+x east, +z south, +y up; metres; origin at Náměstí Svobody',
     mapSize: world?.metadata?.size || 1500,
@@ -1405,7 +1422,7 @@ window.render_game_to_text = () => {
     city: world?.stats ? {
       buildings: world.stats.buildings,
       terrainChunks: world.stats.terrainChunks,
-      drawCalls: world.stats.drawCalls,
+      cityMeshes: world.stats.cityMeshes ?? world.stats.drawCalls,
       sceneTriangles: world.stats.sceneTriangles,
       shadowTriangles: world.stats.shadowTriangles,
       colliders: world.stats.colliders,
@@ -1414,8 +1431,21 @@ window.render_game_to_text = () => {
       calls: renderer.info.render.calls,
       triangles: renderer.info.render.triangles,
     } : null,
+    performance: {
+      productionRendererQa: PRODUCTION_RENDER_QA,
+      quality: render?.stats().quality || null,
+      postStackOk,
+      fpsSamples: qaFpsSamples.length,
+      medianFps: medianFps === null ? null : +medianFps.toFixed(1),
+      smoothFps: Math.round(smoothFps),
+    },
   });
 };
+
+if (AUTOMATED_QA || import.meta.env.DEV) {
+  window.advanceTime = advanceTimeForQa;
+  window.render_game_to_text = renderGameToText;
+}
 
 window.__brno = {
   THREE,

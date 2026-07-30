@@ -76,15 +76,19 @@ restart, clear of obstacles and rails and facing the Marian plague column.
 ### Refreshing the offline map
 
 The generated artifacts are committed; builds and CI never contact data
-services. To refresh the pinned snapshot manually:
+services. A bare refresh uses the committed snapshot date
+`2026-07-30T07:34:01Z`; pass a different `--date` only when intentionally
+updating the snapshot:
 
 ```bash
-npm run import:brno -- --date=2026-07-30T07:34:01Z
+npm run import:brno
 ```
 
 The importer writes `src/data/brno-map.json` and
-`src/data/brno-terrain.bin`. Keep the two datasets separate when distributing
-the game:
+`src/data/brno-terrain.bin`, plus `src/data/brno-checksums.json` so artifact
+drift is visible in review. The `@xmldom/xmldom` override pins the patched XML
+parser used by the importer-only `osmtogeojson` beta dependency. Keep the two
+datasets separate when distributing the game:
 
 - Map data © OpenStreetMap contributors, ODbL 1.0
 - Terrain derived from DMR 5G © ČÚZK, CC BY 4.0

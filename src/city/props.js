@@ -5,7 +5,12 @@ import { InstanceSet, partsGeometry, label } from './mesh.js';
 import { TIER } from './chunks.js';
 import { instanceVisual, rebuildableColliders } from './breakables.js';
 import {
-  FLAG, ROADS, PLAZAS, PLACES, TRAM_STOPS, segments, offsetPolyline, inCore,
+  FLAG,
+  ROADS as DEFAULT_ROADS,
+  PLAZAS as DEFAULT_PLAZAS,
+  PLACES as DEFAULT_PLACES,
+  TRAM_STOPS as DEFAULT_TRAM_STOPS,
+  segments, offsetPolyline, inCore,
 } from './layout.js';
 import { frontageOffset, trackOffsets, samplePolyline, polylineLength } from './plan.js';
 
@@ -36,7 +41,7 @@ import { frontageOffset, trackOffsets, samplePolyline, polylineLength } from './
 const PLATE_COLS = 8;
 const PLATE_ROWS = 8;
 
-function plateAtlas(rng) {
+function plateAtlas(rng, roads) {
   const S = 1024;
   const cw = S / PLATE_COLS;
   const ch = S / PLATE_ROWS;
@@ -76,11 +81,11 @@ function plateAtlas(rng) {
     ctx.globalAlpha = 1;
   };
   // Brno-standard street plates: dark blue ground, white legend and border
-  ROADS.forEach((r, i) => {
+  roads.forEach((r, i) => {
     if (i < PLATE_COLS * 4) cell(i, '#16305e', '#f2f4f8', r.name.toUpperCase(), false);
   });
   // red descriptive house numbers fill the rest of the atlas
-  for (let i = ROADS.length; i < PLATE_COLS * PLATE_ROWS; i++) {
+  for (let i = roads.length; i < PLATE_COLS * PLATE_ROWS; i++) {
     cell(i, '#8d1d1d', '#f6efe4', String(1 + ((i * 37) % 89)), true);
   }
   const map = new THREE.CanvasTexture(col);
@@ -92,7 +97,7 @@ function plateAtlas(rng) {
       map, roughness: 0.32, metalness: 0.15, side: THREE.DoubleSide,
     }),
     streetCell: (i) => i % (PLATE_COLS * 4),
-    numberCell: (i) => ROADS.length + (i % (PLATE_COLS * PLATE_ROWS - ROADS.length)),
+    numberCell: (i) => roads.length + (i % (PLATE_COLS * PLATE_ROWS - roads.length)),
     uv: (i) => [(i % PLATE_COLS) / PLATE_COLS, 1 - (Math.floor(i / PLATE_COLS) + 1) / PLATE_ROWS],
     su: 1 / PLATE_COLS,
     sv: 1 / PLATE_ROWS,
@@ -323,10 +328,14 @@ const SKIN_COLOURS = [0xc79a76, 0xa87452, 0xe0b892, 0x8a5c3c, 0xd0a882];
 
 /* ------------------------------------------------------------------ */
 export function buildProps(group, collision, {
-  rng, flagAt, plots, seed, breakables, chunks, heightAt = null,
+  rng, flagAt, plots, seed, breakables, chunks, heightAt = null, layout = null,
 }) {
+  const roads = layout?.roads || DEFAULT_ROADS;
+  const plazas = layout?.plazas || DEFAULT_PLAZAS;
+  const places = layout?.places || DEFAULT_PLACES;
+  const tramStops = layout?.tramStops || DEFAULT_TRAM_STOPS;
   const art = new Rng(seed ^ 0x2f19b3);
-  const plates = plateAtlas(art);
+  const plates = plateAtlas(art, roads);
 
   const M = {
     // two painted-metal variants serve the whole city: heritage dark for the
@@ -392,7 +401,7 @@ export function buildProps(group, collision, {
   /* ============ 1. lamp standards, bollards, bins along the kerbs ======= */
   let bollards = 0;
   let bins = 0;
-  for (const road of ROADS) {
+  for (const road of roads) {
     const off = frontageOffset(road) - 1.1;
     for (const seg of segments(road.pts)) {
       const spacing = road.w >= 14 ? 26 : 21;
@@ -462,7 +471,7 @@ export function buildProps(group, collision, {
   /* ============ 2. overhead tram wire: masts, spans, contact wire ======= */
   const WIRE_Y = 5.75;
   let masts = 0;
-  for (const road of ROADS) {
+  for (const road of roads) {
     if (!road.tram) continue;
     const offs = trackOffsets(road);
     const mastOff = road.w / 2 + 0.8;
@@ -504,7 +513,7 @@ export function buildProps(group, collision, {
 
   /* ============ 3. tram stops: shelter, flag, bench ======= */
   let shelters = 0;
-  for (const stop of TRAM_STOPS) {
+  for (const stop of tramStops) {
     const { x, z, rot } = stop;
     if (!clear(x, z, 2.4)) continue;
     const c = Math.cos(rot), s = Math.sin(rot);
@@ -538,7 +547,7 @@ export function buildProps(group, collision, {
   let kiosks = 0;
   let stalls = 0;
   let tables = 0;
-  for (const p of PLAZAS) {
+  for (const p of plazas) {
     const [cx, cz, w, d] = p.r;
     const park = p.type === FLAG.PARK;
     const n = park ? Math.round((w * d) / 900) : Math.round((w * d) / 700);
@@ -658,7 +667,7 @@ export function buildProps(group, collision, {
 
   /* ============ 5. parked cars along the kerbs ======= */
   let cars = 0;
-  for (const road of ROADS) {
+  for (const road of roads) {
     if (road.paving === 'sett' && inCore(road.pts[0][0], road.pts[0][1])) continue; // pedestrianised core
     for (const seg of segments(road.pts)) {
       for (const side of [-1, 1]) {
@@ -689,7 +698,7 @@ export function buildProps(group, collision, {
 
   /* ============ 6. enamel plates on the corners and by the doors ======= */
   let plateCount = 0;
-  ROADS.forEach((road, ri) => {
+  roads.forEach((road, ri) => {
     for (const end of [0, road.pts.length - 1]) {
       const p = road.pts[end];
       const near = road.pts[end === 0 ? 1 : road.pts.length - 2];
@@ -724,7 +733,9 @@ export function buildProps(group, collision, {
   }
 
   /* ============ 7. pedestrians ======= */
-  const crowd = buildCrowd(rng, sets, { flagAt, heightAt });
+  const crowd = buildCrowd(rng, sets, {
+    flagAt, heightAt, roads, places,
+  });
 
   /* ---- flush ---- */
   let meshes = 0;
@@ -754,18 +765,20 @@ export function buildProps(group, collision, {
 /* ------------------------------------------------------------------ */
 /* pedestrians                                                         */
 /* ------------------------------------------------------------------ */
-function buildCrowd(rng, sets, { flagAt, heightAt }) {
+function buildCrowd(rng, sets, {
+  flagAt, heightAt, roads, places,
+}) {
   /* Combat spaces the wave director uses. Pedestrians keep clear of them —
    * an empty city centre reads as wrong, but so does a crowd standing in a
    * boss arena. `scatter()` is exposed for whoever wants them to bolt. */
-  const ARENAS = Object.values(PLACES).map((p) => [p.x, p.z, p.name === 'nám. Svobody' ? 62 : 30]);
+  const ARENAS = Object.values(places).map((p) => [p.x, p.z, p.name === 'nám. Svobody' ? 62 : 30]);
   const insideArena = (x, z) => ARENAS.some(([ax, az, r]) => (x - ax) ** 2 + (z - az) ** 2 < r * r);
 
   const people = [];
   const target = 90;
   let guard = 0;
   while (people.length < target && guard++ < 4000) {
-    const road = ROADS[rng.int(0, ROADS.length - 1)];
+    const road = roads[rng.int(0, roads.length - 1)];
     const total = polylineLength(road.pts);
     if (total < 40) continue;
     const walkOff = (frontageOffset(road) - 1.6) * rng.sign();

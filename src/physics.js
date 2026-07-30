@@ -501,6 +501,7 @@ const _dir = [0, 0, 0];
  * the tunnelling that a frame-sized march would otherwise cause.
  */
 function terrainRayDistance(terrain, origin, dir, maxDist, radius = 0, requestedStep = 0.6) {
+  if (dir.y >= 0 && origin.y - radius > (terrain.maxHeight ?? Infinity)) return Infinity;
   const clearance = (t) => {
     const x = origin.x + dir.x * t;
     const y = origin.y + dir.y * t - radius;
@@ -508,8 +509,7 @@ function terrainRayDistance(terrain, origin, dir, maxDist, radius = 0, requested
     return y - terrain.heightAt(x, z);
   };
   let previousT = 0;
-  let previous = clearance(0);
-  if (previous <= 0) return 0;
+  if (clearance(0) <= 0) return 0;
   const step = Math.max(0.15, Math.min(requestedStep || 0.6, (terrain.cellSize || 4) * 0.5));
   for (let t = step; t <= maxDist + step * 0.5; t += step) {
     const currentT = Math.min(t, maxDist);
@@ -523,10 +523,8 @@ function terrainRayDistance(terrain, origin, dir, maxDist, radius = 0, requested
       return hi;
     }
     previousT = currentT;
-    previous = current;
     if (currentT === maxDist) break;
   }
-  void previous;
   return Infinity;
 }
 

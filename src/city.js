@@ -296,7 +296,40 @@ export function buildCity(scene, collision, dataOrSeed = 20250726, maybeSeed = 2
   return buildLegacyCity(scene, collision, dataOrSeed);
 }
 
-function landmarkTransforms(terrain) {
+function halfTurn(angle) {
+  let value = angle;
+  while (value > Math.PI / 2) value -= Math.PI;
+  while (value <= -Math.PI / 2) value += Math.PI;
+  return value;
+}
+
+function landmarkRotation(map, key, legacyAxis) {
+  const place = map.places[key];
+  const exact = map.buildings.filter((building) => building.id === place?.osmId);
+  const candidates = exact.length
+    ? exact
+    : map.buildings.filter((building) => building.landmark === key);
+  let bestLength = 0;
+  let bestAngle = null;
+  for (const building of candidates) {
+    for (const polygon of building.polygons) {
+      const ring = polygon[0] || [];
+      for (let i = 1; i < ring.length; i++) {
+        const dx = ring[i][0] - ring[i - 1][0];
+        const dz = ring[i][1] - ring[i - 1][1];
+        const length = Math.hypot(dx, dz);
+        if (length > bestLength) {
+          bestLength = length;
+          bestAngle = Math.atan2(dz, dx);
+        }
+      }
+    }
+  }
+  if (bestAngle === null) return 0;
+  return halfTurn((legacyAxis === 'z' ? Math.PI / 2 : 0) - bestAngle);
+}
+
+function landmarkTransforms(map, terrain, places = PLACES) {
   const anchors = {
     petrov: [-108, 168, 6.6],
     spilberk: [-268, 44, 15],
@@ -308,17 +341,39 @@ function landmarkTransforms(terrain) {
     nadrazi: [22, 292, 0],
     ceska: [-66, -96, 0],
   };
+  const footprintByKey = new Map(landmarksModule.LANDMARK_FOOTPRINTS.map((entry) => [entry.key, entry.rects]));
   const out = {};
   for (const [key, [ox, oz, base]] of Object.entries(anchors)) {
-    const place = PLACES[key];
+    const place = places[key];
     if (!place) continue;
+    const rects = footprintByKey.get(key) || [];
+    const largest = rects.reduce((best, rect) => {
+      const area = rect[2] * rect[3];
+      return !best || area > best.area ? { rect, area } : best;
+    }, null);
+    const legacyAxis = largest && largest.rect[3] > largest.rect[2] ? 'z' : 'x';
+    const radius = Math.max(12, Math.min(60,
+      largest ? Math.max(largest.rect[2], largest.rect[3]) * 0.35 : 20));
+    const slopeX = (
+      terrain.heightAt(place.x + radius, place.z) - terrain.heightAt(place.x - radius, place.z)
+    ) / (radius * 2);
+    const slopeZ = (
+      terrain.heightAt(place.x, place.z + radius) - terrain.heightAt(place.x, place.z - radius)
+    ) / (radius * 2);
     out[key] = {
       x: place.x - ox,
       z: place.z - oz,
       y: terrain.heightAt(place.x, place.z) - base,
+      originX: ox,
+      originZ: oz,
+      targetX: place.x,
+      targetZ: place.z,
+      rotation: landmarkRotation(map, key, legacyAxis),
+      slopeX,
+      slopeZ,
     };
   }
-  out.svoboda = { x: 0, z: 0, y: terrain.heightAt(PLACES.svoboda.x, PLACES.svoboda.z) };
+  out.svoboda = { x: 0, z: 0, y: terrain.heightAt(places.svoboda.x, places.svoboda.z) };
   return out;
 }
 
@@ -341,17 +396,16 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
   const breakables = createBreakables();
   const cityGroup = new THREE.Group();
   cityGroup.name = 'city:brno-osm-dmr5g';
-  // Repeated street-life props are globally instanced per kind. Imported
-  // buildings keep their own 3x3 spatial buckets, while terrain retains its
-  // independent seam-aligned 128 m chunks.
-  const chunks = new Chunks({ cells: 1, detailRadius: 180 });
-  const buildingChunks = new Chunks({ cells: 3, detailRadius: 180 });
+  // Match the legacy ~140 m spatial buckets so frustum and detail culling stay
+  // effective across the expanded 1.5 km map.
+  const chunks = new Chunks({ cells: 11, detailRadius: 180 });
+  const buildingChunks = new Chunks({ cells: 8, detailRadius: 180 });
 
-  installImportedLayout(map);
+  const importedLayout = installImportedLayout(map);
   collision.setTerrain(terrain);
   const terrainInfo = buildTerrain(cityGroup, terrain);
   const cameraAt = trackCamera(terrainInfo.meshes[0]);
-  const plan = buildImportedPlan(cityGroup, map, terrain);
+  const plan = buildImportedPlan(cityGroup, map, terrain, chunks);
   const flagAt = createFlagAt(plan.flags);
   const navigation = new NavigationField(flagAt, terrain);
   navigation.rebuild(map.start.x, map.start.z);
@@ -360,14 +414,16 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
   const stoneMat = getMaterial('stone', { base: '#8d8577', mortar: '#6e675c', scale: 2 });
   const roofMat = getMaterial('roof');
   const landmarkInfo = landmarksModule.buildLandmarks(cityGroup, collision, {
-    stoneMat, roofMat, rng, transforms: landmarkTransforms(terrain),
+    stoneMat, roofMat, rng, transforms: landmarkTransforms(map, terrain, importedLayout.places),
   });
 
   // Retain the procedural street life, but project every generated element
   // onto the measured heightfield before its chunk buffers are uploaded.
   const vegetationStart = cityGroup.children.length;
   const vegetationColliderStart = collision.boxes.length;
-  const vegetation = buildVegetation(cityGroup, collision, { rng, chunks });
+  const vegetation = buildVegetation(cityGroup, collision, {
+    rng, chunks, layout: importedLayout,
+  });
   drapeChildren(cityGroup, vegetationStart, terrain);
   drapeCollisionBoxes(collision, vegetationColliderStart, terrain);
   const propsStart = cityGroup.children.length;
@@ -375,12 +431,17 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
   const props = buildProps(cityGroup, collision, {
     rng, flagAt, plots: [], seed: rngSeed, breakables, chunks,
     heightAt: (x, z) => terrain.heightAt(x, z),
+    layout: importedLayout,
   });
   drapeChildren(cityGroup, propsStart, terrain);
   drapeCollisionBoxes(collision, propsColliderStart, terrain);
   drapeChunkBatches(chunks, terrain);
 
-  const tramInfo = buildTrams(cityGroup, (x, z) => terrain.heightAt(x, z));
+  const tramInfo = buildTrams(
+    cityGroup,
+    (x, z) => terrain.heightAt(x, z),
+    importedLayout.tramRoutes,
+  );
   const trams = tramInfo.trams;
   const chunkMeshes = chunks.finish(cityGroup);
   chunks.update(0, 0);
@@ -401,7 +462,7 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
     mapMeshes: plan.meshes,
     chunkMeshes,
     detailMeshes: chunks.detailMeshes.length,
-    drawCalls: sceneCounts.meshes,
+    cityMeshes: sceneCounts.meshes,
     ...sceneCounts,
     colliders: collision.boxes.length,
     breakables: breakables.count,
@@ -414,7 +475,7 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
   return {
     group: cityGroup,
     buildings: map.buildings,
-    places: PLACES,
+    places: importedLayout.places,
     landmarks: landmarkInfo,
     props,
     trams,
@@ -427,7 +488,10 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
       x: map.start.x,
       z: map.start.z,
       y: terrain.heightAt(map.start.x, map.start.z),
-      yaw: Math.atan2(PLACES.column.x - map.start.x, PLACES.column.z - map.start.z),
+      yaw: Math.atan2(
+        importedLayout.places.column.x - map.start.x,
+        importedLayout.places.column.z - map.start.z,
+      ),
     },
     reserved: [],
     stats,

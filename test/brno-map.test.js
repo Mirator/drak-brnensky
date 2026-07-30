@@ -1,10 +1,23 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import * as THREE from 'three';
-import { buildingHeight, normalizeOsm, quantize } from '../scripts/import-brno-map.mjs';
+import {
+  buildingHeight, chooseStart, normalizeOsm, parseArgs, PINNED_SOURCE_DATE, quantize,
+} from '../scripts/import-brno-map.mjs';
 import { decodeTerrain, Heightfield, geoToWorld, worldToGeo } from '../src/city/data.js';
-import { NavigationField, polygonContains } from '../src/city/imported.js';
+import {
+  drapeChildren, installImportedLayout, NavigationField, polygonContains, stitchLines,
+} from '../src/city/imported.js';
+import {
+  PLACES as LEGACY_PLACES,
+  PLAZAS as LEGACY_PLAZAS,
+  ROADS as LEGACY_ROADS,
+  TRAM_ROUTES as LEGACY_TRAM_ROUTES,
+  TRAM_STOPS as LEGACY_TRAM_STOPS,
+} from '../src/city/layout.js';
+import { transformLandmarkPoint } from '../src/landmarks/detail.js';
 import { CollisionWorld } from '../src/physics.js';
 
 const map = JSON.parse(fs.readFileSync(new URL('../src/data/brno-map.json', import.meta.url), 'utf8'));
@@ -40,6 +53,19 @@ test('committed Brno artifacts carry bounds, landmarks and separate attribution'
     'at least one imported courtyard/hole is preserved');
   assert.ok(map.buildings.filter((building) => building.landmark).length >= 7,
     'hand-modelled landmark footprints are marked for runtime exclusion');
+});
+
+test('committed Brno artifact hashes match the pinned checksum manifest', () => {
+  const manifest = JSON.parse(fs.readFileSync(
+    new URL('../src/data/brno-checksums.json', import.meta.url), 'utf8',
+  ));
+  assert.equal(manifest.sourceDate, PINNED_SOURCE_DATE);
+  for (const name of ['brno-map.json', 'brno-terrain.bin']) {
+    const data = fs.readFileSync(new URL(`../src/data/${name}`, import.meta.url));
+    assert.equal(createHash('sha256').update(data).digest('hex'), manifest.sha256[name]);
+  }
+  assert.equal(parseArgs([]).date, PINNED_SOURCE_DATE);
+  assert.equal(parseArgs(['--date=2026-08-01']).date, '2026-08-01T23:59:59Z');
 });
 
 test('Náměstí Svobody spawn is inside its OSM polygon and faces the Marian column', () => {
@@ -107,6 +133,87 @@ test('4 m navigation flow stays in the player-connected walkable component', () 
   assert.equal(nav.reachable(6, 6), false);
   const direction = nav.directionAt(-6, 6, -6, 0);
   assert.ok(direction && direction.z < 0);
+});
+
+test('navigation caches static walkability across flow-field rebuilds', () => {
+  let slopeSamples = 0;
+  const terrain = { slopeAt: () => { slopeSamples++; return 0; } };
+  const nav = new NavigationField(() => 30, terrain, 100);
+  const afterConstruction = slopeSamples;
+  assert.equal(afterConstruction, nav.width * nav.width);
+  assert.equal(nav.rebuild(0, 0), true);
+  nav.rebuild(200, 0);
+  assert.equal(slopeSamples, afterConstruction);
+});
+
+test('tram stitching joins reversible fragments and respects tolerance', () => {
+  const stitched = stitchLines([
+    [[0, 0], [45, 0]],
+    [[90, 0], [45, 0]],
+    [[200, 0], [290, 0]],
+  ], 0.1);
+  assert.deepEqual(stitched[0], [[0, 0], [45, 0], [90, 0]]);
+  assert.deepEqual(stitched[1], [[200, 0], [290, 0]]);
+});
+
+test('imported layout is capped, deterministic, and leaves legacy fixtures untouched', () => {
+  const before = {
+    places: JSON.stringify(LEGACY_PLACES),
+    roads: JSON.stringify(LEGACY_ROADS),
+    plazas: JSON.stringify(LEGACY_PLAZAS),
+    tramRoutes: JSON.stringify(LEGACY_TRAM_ROUTES),
+    tramStops: JSON.stringify(LEGACY_TRAM_STOPS),
+  };
+  const first = installImportedLayout(map);
+  const second = installImportedLayout(map);
+  assert.deepEqual(first, second);
+  assert.ok(first.roads.length <= 120);
+  assert.ok(first.plazas.length <= 60);
+  assert.deepEqual({
+    places: JSON.stringify(LEGACY_PLACES),
+    roads: JSON.stringify(LEGACY_ROADS),
+    plazas: JSON.stringify(LEGACY_PLAZAS),
+    tramRoutes: JSON.stringify(LEGACY_TRAM_ROUTES),
+    tramStops: JSON.stringify(LEGACY_TRAM_STOPS),
+  }, before);
+});
+
+test('drapeChildren lifts a local mesh positioned at the world origin', () => {
+  const group = new THREE.Group();
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1));
+  const beforeY = mesh.geometry.attributes.position.getY(0);
+  group.add(mesh);
+  drapeChildren(group, 0, { heightAt: () => 7 });
+  assert.equal(mesh.position.y, 7);
+  assert.equal(mesh.geometry.attributes.position.getY(0), beforeY);
+});
+
+test('landmark transforms rotate around their authored anchor and follow a fitted plane', () => {
+  const point = transformLandmarkPoint(12, 3, 20, {
+    originX: 10, originZ: 20,
+    targetX: 100, targetZ: 200,
+    rotation: Math.PI / 2,
+    y: 5, slopeX: 0.1, slopeZ: 0.2,
+  });
+  assert.ok(Math.abs(point.x - 100) < 1e-9);
+  assert.ok(Math.abs(point.z - 198) < 1e-9);
+  assert.ok(Math.abs(point.y - 7.6) < 1e-9);
+});
+
+test('chooseStart validates its fallback when the square footprint is absent', () => {
+  const buildings = [{
+    polygons: [[[
+      [-5, -5], [5, -5], [5, 5], [-5, 5], [-5, -5],
+    ]]],
+  }];
+  const places = {
+    svoboda: { x: 0, z: 0 },
+    column: { x: 20, z: 20 },
+    orloj: { x: -20, z: -20 },
+  };
+  const start = chooseStart([], buildings, [], places);
+  assert.equal(start.clearance, 2.2);
+  assert.notDeepEqual([start.x, start.z], [0, 0]);
 });
 
 test('projection helpers round-trip and importer output is deterministic', () => {

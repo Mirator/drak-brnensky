@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROFILE, polyPath } from './detail.js';
+import { PROFILE, polyPath, transformLandmarkPoint } from './detail.js';
 import { mergeAll } from '../geometry.js';
 
 /**
@@ -250,8 +250,10 @@ export function build(b, ctx) {
   }
   dragon.position.set(PASS_X, 4.3, dz);
   const relocation = transforms?.radnice;
-  if (relocation) dragon.position.add(new THREE.Vector3(relocation.x, relocation.y, relocation.z));
-  dragon.rotation.y = Math.PI / 2 + 0.12; // hangs broadside, like the real one
+  if (relocation) {
+    transformLandmarkPoint(PASS_X, 4.3, dz, relocation, dragon.position);
+  }
+  dragon.rotation.y = Math.PI / 2 + 0.12 + (relocation?.rotation || 0); // hangs broadside, like the real one
   dragon.scale.setScalar(1.15);
   group.add(dragon);
   animated.push({ obj: dragon, kind: 'sway', base: dragon.position.y });
