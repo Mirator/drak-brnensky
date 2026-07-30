@@ -94,7 +94,7 @@ function build(pb, tpl) {
       const bone = chain[Math.min(chain.length - 1, Math.floor(t * chain.length))];
       const width = 0.62 - Math.abs(t - 0.5) * 0.4;
       const g = new THREE.BoxGeometry(width * 2, 0.1, 0.16);
-      pb.add(paleRegion(place(g, 0, lerp(R.chest.y - 0.86, R.pelvis.y - 0.82, t), z)), bone, 'body');
+      pb.add(paleRegion(place(g, 0, lerp(R.chest.y - 0.86, R.pelvis.y - 0.82, t), z)), bone, 'detail');
     }
   }
 
@@ -139,15 +139,15 @@ function build(pb, tpl) {
     // eyes sit high on the skull, like a crocodile watching the waterline
     pb.add(glowRegion(place(new THREE.SphereGeometry(0.10, 8, 6), R.head.x + s * 0.20, R.head.y + 0.20, R.head.z - 0.24)), 'head', 'body');
     pb.add(region(place(spike(0.11, 0.34, { radial: 5, rings: 2, curve: -0.3 }),
-      R.head.x + s * 0.22, R.head.y + 0.24, R.head.z - 0.10, -0.9, 0, s * 0.35), 0.5, 0.6, 0.62, 0.72), 'head', 'body');
+      R.head.x + s * 0.22, R.head.y + 0.24, R.head.z - 0.10, -0.9, 0, s * 0.35), 0.5, 0.6, 0.62, 0.72), 'head', 'detail');
     // swept back horns — the mythic half of the design
     pb.add(boneRegion(place(spike(0.13, 1.15, { radial: 6, rings: 4, curve: 0.55 }),
-      R.head.x + s * 0.26, R.head.y + 0.22, R.head.z + 0.24, -0.55, 0, s * 0.42)), 'head', 'body');
+      R.head.x + s * 0.26, R.head.y + 0.22, R.head.z + 0.24, -0.55, 0, s * 0.42)), 'head', 'detail');
     pb.add(boneRegion(place(spike(0.08, 0.55, { radial: 5, rings: 3, curve: 0.3 }),
-      R.head.x + s * 0.34, R.head.y - 0.02, R.head.z + 0.16, 0.1, 0, s * 1.15)), 'head', 'body');
+      R.head.x + s * 0.34, R.head.y - 0.02, R.head.z + 0.16, 0.1, 0, s * 1.15)), 'head', 'detail');
     // jaw cheek scutes
     pb.add(region(place(spike(0.09, 0.26, { radial: 4, rings: 2 }),
-      R.jaw.x + s * 0.26, R.jaw.y + 0.04, R.jaw.z - 0.40, 0, 0, s * 1.5), 0.46, 0.36, 0.56, 0.46), 'jaw', 'body');
+      R.jaw.x + s * 0.26, R.jaw.y + 0.04, R.jaw.z - 0.40, 0, 0, s * 1.5), 0.46, 0.36, 0.56, 0.46), 'jaw', 'detail');
   }
   /* interdigitated teeth — the crocodile read */
   for (let i = 0; i < 9; i++) {
@@ -157,10 +157,10 @@ function build(pb, tpl) {
       const w = lerp(0.28, 0.14, t);
       const size = i === 1 || i === 4 ? 0.055 : 0.036;
       pb.add(boneRegion(place(spike(size, size * 5.2, { radial: 4, rings: 2 }),
-        s * w, R.head.y - 0.16 - Math.abs(Math.sin(i)) * 0.01, z, Math.PI, 0, 0)), 'head', 'body');
+        s * w, R.head.y - 0.16 - Math.abs(Math.sin(i)) * 0.01, z, Math.PI, 0, 0)), 'head', 'detail');
       if (i < 8) {
         pb.add(boneRegion(place(spike(size * 0.92, size * 4.6, { radial: 4, rings: 2 }),
-          s * (w - 0.012), R.jaw.y + 0.10, z - 0.055)), 'jaw', 'body');
+          s * (w - 0.012), R.jaw.y + 0.10, z - 0.055)), 'jaw', 'detail');
       }
     }
   }
@@ -178,7 +178,7 @@ function build(pb, tpl) {
     const top = R[name].y + (onNeck ? 0.30 : onTail ? 0.28 : 0.80);
     const keel = spike(onNeck ? 0.14 : 0.22 - t * 0.06, onNeck ? 0.34 : 0.62 - t * 0.16, { radial: 5, rings: 3 });
     keel.scale(0.42, 1, 1.15);
-    pb.add(boneRegion(place(keel, 0, top, R[name].z, -0.35 + t * 0.25, 0, 0)), name, 'body');
+    pb.add(boneRegion(place(keel, 0, top, R[name].z, -0.35 + t * 0.25, 0, 0)), name, 'detail');
     // paravertebral rows: two flatter osteoderms either side of the keel
     if (!onNeck) {
       for (const s of [-1, 1]) {
@@ -186,7 +186,7 @@ function build(pb, tpl) {
         plate.scale(1, 1, 1.5);
         pb.add(region(place(plate,
           s * (0.42 - t * 0.14), top - 0.22, R[name].z,
-          -0.2, 0, s * 0.75), 0.06, 0.06, 0.34, 0.3), name, 'body');
+          -0.2, 0, s * 0.75), 0.06, 0.06, 0.34, 0.3), name, 'detail');
       }
     }
   });
@@ -195,7 +195,7 @@ function build(pb, tpl) {
     for (let i = 0; i < 4; i++) {
       const names = ['chest', 'spineB', 'spineA', 'pelvis'];
       const g = new THREE.BoxGeometry(0.1, 0.26, 0.7);
-      pb.add(glowRegion(place(g, s * 0.80, R[names[i]].y - 0.34, R[names[i]].z, 0, 0, s * 0.2)), names[i], 'body');
+      pb.add(glowRegion(place(g, s * 0.80, R[names[i]].y - 0.34, R[names[i]].z, 0, 0, s * 0.2)), names[i], 'detail');
     }
   }
 
@@ -229,7 +229,7 @@ function build(pb, tpl) {
         pb.add(paleRegion(boneSegment(off(R[paw], spread * 0.35, 0.08, 0), toe, 0.10, 0.06,
           { radial: 5, rings: 1, cap0: 0.5, cap1: 0.4 })), paw, 'body');
         pb.add(boneRegion(place(spike(0.05, 0.26, { radial: 4, rings: 2, curve: 0.35 }),
-          toe.x, toe.y + 0.02, toe.z - 0.06, -1.35, 0, 0)), paw, 'body');
+          toe.x, toe.y + 0.02, toe.z - 0.06, -1.35, 0, 0)), paw, 'detail');
       }
     };
     limb(front, [0.34, 0.30, 0.26, 0.22, 0.20]);
@@ -251,7 +251,7 @@ function build(pb, tpl) {
     pb.add(region(boneSegment(B, C, 0.15, 0.11, { radial: 7, rings: 2, cap0: 0.6 }), 0.3, 0.06, 0.54, 0.28), `wingB${k}`, 'body');
     pb.add(region(boneSegment(C, D, 0.11, 0.06, { radial: 6, rings: 2, cap0: 0.6 }), 0.06, 0.3, 0.3, 0.5), `wingC${k}`, 'body');
     pb.add(boneRegion(place(spike(0.07, 0.5, { radial: 5, rings: 2, curve: 0.3 }),
-      C.x, C.y + 0.10, C.z - 0.06, -1.1, 0, s * 0.4)), `wingC${k}`, 'body');
+      C.x, C.y + 0.10, C.z - 0.06, -1.1, 0, s * 0.4)), `wingC${k}`, 'detail');
 
     const fingers = [
       [D.x + s * 0.35, D.y - 0.35, D.z + 0.55],

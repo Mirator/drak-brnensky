@@ -305,7 +305,6 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
     coat: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.82 }),
     skin: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.65 }),
     trouser: new THREE.MeshStandardMaterial({ color: 0x2b2e35, roughness: 0.85 }),
-    wire: new THREE.MeshStandardMaterial({ color: 0x1a1c1f, roughness: 0.5, metalness: 0.7 }),
   };
 
   label(M);
@@ -436,7 +435,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
           const [a, b] = tops;
           const dx = b[0] - a[0], dz = b[1] - a[1];
           const len = Math.hypot(dx, dz) || 1;
-          D(M.wire, a[0], a[1]).box((a[0] + b[0]) / 2, WIRE_Y + 0.55, (a[1] + b[1]) / 2,
+          D(M.steel, a[0], a[1]).box((a[0] + b[0]) / 2, WIRE_Y + 0.55, (a[1] + b[1]) / 2,
             len, 0.05, 0.05, Math.atan2(-dz, dx), () => [len, 0.2, 0, 0]);
         }
       }
@@ -445,7 +444,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
     for (const off of offs) {
       const centre = off === 0 ? road.pts : offsetPolyline(road.pts, off);
       for (const seg of segments(centre)) {
-        D(M.wire, seg.ax, seg.az).box((seg.ax + seg.bx) / 2, WIRE_Y, (seg.az + seg.bz) / 2,
+        D(M.steel, seg.ax, seg.az).box((seg.ax + seg.bx) / 2, WIRE_Y, (seg.az + seg.bz) / 2,
           seg.len, 0.045, 0.045, seg.rot, () => [seg.len, 0.2, 0, 0]);
       }
     }

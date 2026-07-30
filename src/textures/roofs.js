@@ -139,7 +139,14 @@ export function makeSlateCopperMaterial(seed = 202, { copper = true } = {}) {
   nmap.wrapS = nmap.wrapT = THREE.RepeatWrapping; nmap.anisotropy = 8; nmap.colorSpace = THREE.NoColorSpace;
   const ao = aoFromHeight(height, { strength: 1.2 });
   const rough = noiseGray(S, S, patina, { base: copper ? 0.5 : 0.35, variation: 0.2 });
-  const orm = packORM(S, S, { ao, rough, metal: copper ? 0.6 : 0.75 });
+  // Slate is stone, a dielectric — it must read near-zero metalness. Copper
+  // gets a lower-than-bare-metal value too, since the weathered patina
+  // (copper carbonate, itself a dielectric oxide) covers most of the
+  // visible surface. These two were previously swapped (slate at 0.75,
+  // copper at 0.6), which made every slate landmark roof (Petrov, Špilberk)
+  // render as three-quarters metallic — losing nearly all diffuse response
+  // off the direct specular highlight.
+  const orm = packORM(S, S, { ao, rough, metal: copper ? 0.6 : 0.04 });
   const ormMap = new THREE.CanvasTexture(orm);
   ormMap.wrapS = ormMap.wrapT = THREE.RepeatWrapping; ormMap.anisotropy = 8; ormMap.colorSpace = THREE.NoColorSpace;
 

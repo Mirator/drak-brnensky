@@ -105,7 +105,11 @@ export function makeTramLiveryMaterial({ seed = 74, size = tierSize(512) } = {})
     ctx.fillRect(0, size * 0.93, size, size * 0.02);
     grain(ctx, size, size, mode === 'albedo' ? 8 : 4, rng);
   };
-  return build(seed, size, draw, { roughBase: 0.35, roughVar: 0.1, metal: 0.6, normalStrength: 0.5, envMapIntensity: 0.9 });
+  // Flat painted livery panels — no bare-metal chip/wear mask like
+  // makePaintedMetalMaterial has, so the whole surface is intact paint.
+  // A dielectric coating (near-zero metalness) is correct; 0.6 previously
+  // made every tram body three-fifths metallic with no basis for it.
+  return build(seed, size, draw, { roughBase: 0.35, roughVar: 0.1, metal: 0.04, normalStrength: 0.5, envMapIntensity: 0.9 });
 }
 
 /* ------------------------------------------------------------------ */

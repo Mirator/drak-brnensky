@@ -599,6 +599,9 @@ async function boot() {
     });
     chase = new ChaseCamera(camera, collision);
     enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
+    /* Hand the creatures the rigid-body solver so their deaths ragdoll. Without
+     * this they fall back to a procedural collapse, so it stays optional. */
+    enemies.physics = physics;
 
     await step(78, 'dračí potomstvo');
     hud = new Hud(world.minimap);

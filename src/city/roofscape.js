@@ -43,7 +43,11 @@ export class Roofscape {
   add(chunks, mass, { alongX, ridgeH, ow, od, skipPlusX, skipMinusX, isWing }) {
     const rng = this.rng;
     const { x, z, rot, eaves } = mass;
-    const S = (m) => chunks.get(m, x, z, TIER.SILHOUETTE);
+    /* Chimneys, ridges and dormers are pure skyline: they must be there at
+     * any distance, but their shadow falls on the roof slope they stand on,
+     * so all of it goes in the no-shadow tier. That is around 60k triangles
+     * kept out of three cascades. */
+    const N = (m) => chunks.get(m, x, z, TIER.NOSHADOW);
     const D = (m) => chunks.get(m, x, z, TIER.DETAIL);
     // span = across the pitch, run = along the ridge
     const span = alongX ? od : ow;
@@ -54,7 +58,7 @@ export class Roofscape {
       : Roofscape.place(mass, across, alongRidge));
 
     /* ---- ridge tiles ---- */
-    const ridge = S(this.M.clay);
+    const ridge = N(this.M.clay);
     {
       const [rx, rz] = at(0, 0);
       ridge.box(rx, eaves + ridgeH - 0.1, rz,
@@ -65,7 +69,7 @@ export class Roofscape {
 
     /* ---- chimneys, clustered near the ridge as they really are ---- */
     const n = mass.chimneys ?? 2;
-    const brick = S(this.M.brick);
+    const brick = N(this.M.brick);
     for (let i = 0; i < n; i++) {
       const alongRidge = rng.float(-run / 2 + 0.9, run / 2 - 0.9);
       const across = rng.float(-span * 0.16, span * 0.16);
@@ -80,7 +84,7 @@ export class Roofscape {
       brick.box(cx, baseY + h, cz, cw + 0.16, 0.14, cd + 0.16, rot,
         () => [1.4, 0.4, 0, 0], [false, false, false, false, false, true]);
       if (rng.chance(0.45)) {
-        const pots = S(this.M.metal);
+        const pots = N(this.M.metal);
         pots.box(cx, baseY + h + 0.14, cz, cw * 0.42, rng.float(0.24, 0.44), cd * 0.5, rot,
           () => [0.6, 0.6, 0, 0], [false, false, false, false, false, true]);
       }
@@ -103,14 +107,14 @@ export class Roofscape {
         const dw = rng.float(1.15, 1.6);
         const dh = rng.float(1.25, 1.7);
         // cheeks + face
-        S(this.M.cornice).box(dx, y, dz, dw, dh, 1.5, drot,
+        N(this.M.cornice).box(dx, y, dz, dw, dh, 1.5, drot,
           (f) => [(f === 0 || f === 1 ? 1.5 : dw) / 1.2, dh / 1.2, 0, 0],
           [false, false, true, false, true, true]);
         // its own little pitched roof
-        S(this.M.clay).gable(dx, y + dh, dz, dw + 0.24, 1.7, 0.55, drot, 1.4);
+        N(this.M.clay).gable(dx, y + dh, dz, dw + 0.24, 1.7, 0.55, drot, 1.4);
         // glazing, slightly recessed into the face
         const fc = Math.cos(drot), fs = Math.sin(drot);
-        S(this.M.glass).quad(
+        N(this.M.glass).quad(
           dx + fc * dw * 0.34 - fs * 0.78, y + 0.22, dz - fs * dw * 0.34 - fc * 0.78,
           -fc * dw * 0.68, 0, fs * dw * 0.68,
           0, dh - 0.42, 0, 1, 1,

@@ -100,11 +100,21 @@ async function applyView(view) {
     } else {
       placePlayer(view.at, view.yaw);
       settle(40);
-      for (const type of view.enemies || []) {
-        const a = Math.random() * Math.PI * 2;
-        const r = 9 + Math.random() * 10;
-        b.spawnEnemy(type, b.player.pos.x + Math.cos(a) * r, b.player.pos.z + Math.sin(a) * r);
-      }
+      /* Spawn into the camera's forward arc, not around the full circle.
+       * Spawning uniformly in a ring put most of the creatures behind the
+       * camera, so combat captures came back with an empty street and the
+       * enemy work went unreviewed. Angles are fixed rather than random so two
+       * runs of the same view are comparable. */
+      const fwd = new b.THREE.Vector3();
+      b.camera.getWorldDirection(fwd);
+      const base = Math.atan2(fwd.x, fwd.z);
+      const spread = [-0.42, 0.28, -0.14, 0.5, 0.05, -0.6];
+      const radii = [11, 16, 13, 19, 9, 15];
+      (view.enemies || []).forEach((type, i) => {
+        const a = base + spread[i % spread.length];
+        const r = radii[i % radii.length];
+        b.spawnEnemy(type, b.player.pos.x + Math.sin(a) * r, b.player.pos.z + Math.cos(a) * r);
+      });
       if (view.enemies) settle(50);
       if (view.fire) {
         b.input.mouse.left = true;

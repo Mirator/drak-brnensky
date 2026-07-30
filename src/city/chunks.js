@@ -13,19 +13,24 @@ import { MAP_SIZE, HALF } from './layout.js';
  * post-processing stack rendering the scene several times per frame, that
  * is the dominant cost in the whole project.
  *
- * So geometry is merged per material *per chunk* instead, in two tiers:
+ * So geometry is merged per material *per chunk* instead, in three tiers,
+ * chosen by what a triangle is actually for:
  *
- *   silhouette  walls, roofs, cornices, chimneys, dormers — what reads at
- *               any distance. Frustum-culled only.
- *   detail      plinths, string courses, gutters, downpipes, aerials,
- *               dishes, shopfronts, rooftop plant — invisible past a
- *               hundred metres or so. Frustum-culled *and* distance-culled.
+ *   SILHOUETTE  walls, roofs, main cornices — the shapes that block light.
+ *               Frustum-culled, and casts into the shadow cascades.
+ *   NOSHADOW    chimneys, dormers, ridges, firewalls, parapets — skyline
+ *               reads at any distance, but their shadows land on the roof
+ *               they are standing on and nobody will ever notice. Visible
+ *               at any range, excluded from every cascade.
+ *   DETAIL      plinths, string courses, gutters, downpipes, aerials,
+ *               dishes, shopfronts, plates, rooftop plant. Frustum-culled,
+ *               distance-culled, and never in a cascade.
  *
- * The trade is draw calls for triangles: a ground-level view submits a
- * handful of chunks instead of the entire map, and past `detailRadius` the
- * fine tier is simply not there.
+ * Shadow exclusion is the highest-leverage flag in this file: the renderer
+ * runs three cascades, so a triangle kept out of the shadow pass is saved
+ * three times over.
  */
-export const TIER = { SILHOUETTE: 0, DETAIL: 1 };
+export const TIER = { SILHOUETTE: 0, DETAIL: 1, NOSHADOW: 2 };
 
 let matSeq = 0;
 const matIds = new WeakMap();
@@ -91,18 +96,27 @@ export class Chunks {
       const geo = entry.batch.geometry();
       if (!geo) continue;
       const mesh = new THREE.Mesh(geo, entry.material);
-      mesh.name = `${entry.tier === TIER.DETAIL ? 'detail' : 'city'}:${entry.material.name || entry.material.type}`;
-      mesh.castShadow = true;
+      const kind = entry.tier === TIER.DETAIL ? 'detail'
+        : entry.tier === TIER.NOSHADOW ? 'shell' : 'city';
+      mesh.name = `${kind}:${entry.material.name || entry.material.type}`;
+      mesh.castShadow = entry.tier === TIER.SILHOUETTE;
       mesh.receiveShadow = true;
       mesh.matrixAutoUpdate = false;
       mesh.updateMatrix();
       group.add(mesh);
       this.meshCount++;
       if (entry.tier === TIER.DETAIL) {
-        const [cx, cz] = this.cellCentre(entry.cell);
-        // small clutter is never worth a shadow-map pass
-        mesh.castShadow = false;
-        this.detailMeshes.push({ mesh, cx, cz, reach: this.detailRadius + halfDiag });
+        // Distance test against this bucket's own bounding sphere rather than
+        // the chunk centre: a bucket holding six downpipes in one corner of
+        // a chunk should not stay visible because the chunk is nominally
+        // near. Geometry is baked in world space, so the sphere already is.
+        const sphere = geo.boundingSphere;
+        this.detailMeshes.push({
+          mesh,
+          cx: sphere ? sphere.center.x : this.cellCentre(entry.cell)[0],
+          cz: sphere ? sphere.center.z : this.cellCentre(entry.cell)[1],
+          reach: this.detailRadius + (sphere ? sphere.radius : halfDiag),
+        });
       }
     }
     this.entries.clear();
@@ -161,10 +175,14 @@ export class InstanceGrid {
       mesh.computeBoundingSphere();
       meshes++;
       if (this.tier === TIER.DETAIL) {
-        const [cx, cz] = this.chunks.cellCentre(cell);
         mesh.castShadow = false;
+        const sphere = mesh.boundingSphere || mesh.geometry.boundingSphere;
+        const [ccx, ccz] = this.chunks.cellCentre(cell);
         this.chunks.detailMeshes.push({
-          mesh, cx, cz, reach: this.chunks.detailRadius + halfDiag,
+          mesh,
+          cx: sphere ? sphere.center.x : ccx,
+          cz: sphere ? sphere.center.z : ccz,
+          reach: this.chunks.detailRadius + (sphere ? sphere.radius : halfDiag),
         });
       }
     }

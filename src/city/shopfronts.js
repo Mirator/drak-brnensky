@@ -12,158 +12,214 @@ import { TIER } from './chunks.js';
  * sign, a roller shutter on the shabbier ones, and an A-board out on the
  * pavement.
  *
- * The signage is the interesting constraint: a sign baked into the facade
- * material would force one material per shop name. Instead the names are
- * drawn into a single 4x4 *atlas* (albedo + emissive) here in city code, and
- * each fascia UV-maps into one cell — so the whole city's signage, in twelve
- * real Czech shop names and several band colours, shares one material.
+ * Signage is the interesting constraint: a sign baked into the facade
+ * material would force one material per shop name. So *everything* painted
+ * here — sixteen Czech shop fascias, four striped awning canvases, four lit
+ * shop interiors and a corrugated roller shutter — lives in a single 1024²
+ * atlas (albedo plus an emissive companion for the lit cells), and each
+ * quad UV-maps into one 256 x 128 cell. One material, one texture upload,
+ * one chunk bucket, for the whole city's commerce.
  *
  * All of it goes into the chunked detail tier: a shopfront is a ground-level
  * read, and past about a hundred metres the piers, awning and A-board are a
  * couple of pixels each.
  */
 
-const SIGN_COLS = 4;
-const SIGN_ROWS = 4;
-const SIGN_CELLS = SIGN_COLS * SIGN_ROWS;
+/* atlas: 4 columns x 8 rows of 256 x 128 cells */
+const A_COLS = 4;
+const A_ROWS = 8;
+const CELL_W = 256;
+const CELL_H = 128;
+/** cell ranges within the atlas */
+const SIGN_0 = 0;      // 0..15  shop fascias
+const SIGN_N = 16;
+const AWNING_0 = 16;   // 16..19 striped canvas
+const AWNING_N = 4;
+const SHOP_0 = 20;     // 20..23 lit interiors
+const SHOP_N = 4;
+const SHUTTER_0 = 24;  // 24..27 corrugated shutter, some tagged
+const SHUTTER_N = 4;
 
 const BAND_COLOURS = [
   ['#12402c', '#f2e6c8'], ['#5c1a1a', '#f6ead0'], ['#1b2f52', '#e8eef6'],
   ['#3d2a12', '#f0dfb4'], ['#0f3a3a', '#e6f2ee'], ['#4a1338', '#f4e2ee'],
   ['#2b2b2e', '#e9e4d6'], ['#6b4a10', '#fdf2d2'],
 ];
+const AWNING_PAIRS = [
+  ['#8d2b26', '#e9dcc2'], ['#1f4a33', '#e9dcc2'],
+  ['#25406b', '#ded6c4'], ['#6b5a1d', '#f0e6cc'],
+];
+const INTERIOR_TINTS = [
+  ['#3b2a12', '#ffd9a0'], ['#123028', '#bfe8d4'],
+  ['#3a1c14', '#ffb877'], ['#1a2436', '#cfe0ff'],
+];
+const TAG_COLOURS = ['#c8452f', '#2f6fc8', '#d8b32f', '#39b573'];
 
-function canvas2d(size, h = size) {
+/** UV window for an atlas cell. */
+function cellUV(i) {
+  const col = i % A_COLS;
+  const row = Math.floor(i / A_COLS);
+  return [col / A_COLS, 1 - (row + 1) / A_ROWS, 1 / A_COLS, 1 / A_ROWS];
+}
+
+function canvas2d(w, h = w) {
   const c = document.createElement('canvas');
-  c.width = size;
+  c.width = w;
   c.height = h;
   return c;
 }
 
-/** 4x4 atlas of enamel-style shop fascias, plus a matching emissive mask. */
-function signAtlas(rng) {
-  const S = 1024;
-  const cell = S / SIGN_COLS;
-  const col = canvas2d(S);
-  const emi = canvas2d(S);
+/** The one shopfront atlas: albedo + emissive, everything commerce needs. */
+function shopAtlas(rng) {
+  const W = A_COLS * CELL_W;
+  const H = A_ROWS * CELL_H;
+  const col = canvas2d(W, H);
+  const emi = canvas2d(W, H);
   const cc = col.getContext('2d');
   const ec = emi.getContext('2d');
+  cc.fillStyle = '#14161a';
+  cc.fillRect(0, 0, W, H);
   ec.fillStyle = '#000';
-  ec.fillRect(0, 0, S, S);
-  for (let i = 0; i < SIGN_CELLS; i++) {
-    const cx = (i % SIGN_COLS) * cell;
-    const cy = Math.floor(i / SIGN_COLS) * cell;
-    const [bg, fg] = BAND_COLOURS[i % BAND_COLOURS.length];
-    const text = CZECH_SIGNS[i % CZECH_SIGNS.length];
-    const pad = cell * 0.04;
+  ec.fillRect(0, 0, W, H);
+  const at = (i) => [(i % A_COLS) * CELL_W, Math.floor(i / A_COLS) * CELL_H];
+
+  /* ---- shop fascias ---- */
+  for (let k = 0; k < SIGN_N; k++) {
+    const [x, y] = at(SIGN_0 + k);
+    const [bg, fg] = BAND_COLOURS[k % BAND_COLOURS.length];
+    const text = CZECH_SIGNS[k % CZECH_SIGNS.length];
     cc.fillStyle = bg;
-    cc.fillRect(cx, cy, cell, cell);
-    // enamel sheen + border
-    const g = cc.createLinearGradient(cx, cy, cx, cy + cell);
+    cc.fillRect(x, y, CELL_W, CELL_H);
+    const g = cc.createLinearGradient(x, y, x, y + CELL_H);
     g.addColorStop(0, 'rgba(255,255,255,0.16)');
     g.addColorStop(0.5, 'rgba(255,255,255,0.02)');
     g.addColorStop(1, 'rgba(0,0,0,0.22)');
     cc.fillStyle = g;
-    cc.fillRect(cx, cy, cell, cell);
+    cc.fillRect(x, y, CELL_W, CELL_H);
     cc.strokeStyle = fg;
-    cc.lineWidth = cell * 0.022;
-    cc.strokeRect(cx + pad, cy + pad, cell - pad * 2, cell - pad * 2);
-    // the name, scaled to fit the band
+    cc.lineWidth = CELL_H * 0.05;
+    cc.strokeRect(x + 6, y + 6, CELL_W - 12, CELL_H - 12);
     const lit = rng.chance(0.62);
     for (const ctx of lit ? [cc, ec] : [cc]) {
       ctx.save();
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      let size = cell * 0.34;
+      let size = CELL_H * 0.52;
       ctx.font = `bold ${size}px sans-serif`;
-      while (ctx.measureText(text).width > cell * 0.8 && size > 6) {
+      while (ctx.measureText(text).width > CELL_W * 0.84 && size > 8) {
         size -= 2;
         ctx.font = `bold ${size}px sans-serif`;
       }
       ctx.fillStyle = ctx === ec ? '#ffe4ad' : fg;
-      ctx.fillText(text, cx + cell / 2, cy + cell / 2);
+      ctx.fillText(text, x + CELL_W / 2, y + CELL_H / 2);
       ctx.restore();
     }
-    // a little grime in the corners so they are not showroom-new
+    // grime, so they are not showroom-new
     cc.globalAlpha = 0.22;
     cc.fillStyle = '#14120e';
-    for (let k = 0; k < 8; k++) {
+    for (let i = 0; i < 8; i++) {
       cc.beginPath();
-      cc.ellipse(cx + rng.float(0, cell), cy + rng.float(0, cell),
-        rng.float(4, 22), rng.float(3, 14), rng.float(0, 3), 0, Math.PI * 2);
+      cc.ellipse(x + rng.float(0, CELL_W), y + rng.float(0, CELL_H),
+        rng.float(4, 22), rng.float(3, 12), rng.float(0, 3), 0, Math.PI * 2);
       cc.fill();
     }
     cc.globalAlpha = 1;
   }
-  const map = new THREE.CanvasTexture(col);
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.anisotropy = 8;
-  const em = new THREE.CanvasTexture(emi);
-  em.colorSpace = THREE.SRGBColorSpace;
-  em.anisotropy = 8;
-  return new THREE.MeshStandardMaterial({
-    map, emissiveMap: em, emissive: new THREE.Color(0xffca7a), emissiveIntensity: 1.1,
-    roughness: 0.55, metalness: 0.1,
-  });
-}
 
-/** 2x2 atlas of lit shop interiors seen through the glazing. */
-function shopGlassAtlas(rng) {
-  const S = 512;
-  const cell = S / 2;
-  const col = canvas2d(S);
-  const emi = canvas2d(S);
-  const cc = col.getContext('2d');
-  const ec = emi.getContext('2d');
-  ec.fillStyle = '#000';
-  ec.fillRect(0, 0, S, S);
-  const tints = [
-    ['#3b2a12', '#ffd9a0'], ['#123028', '#bfe8d4'],
-    ['#3a1c14', '#ffb877'], ['#1a2436', '#cfe0ff'],
-  ];
-  for (let i = 0; i < 4; i++) {
-    const cx = (i % 2) * cell, cy = Math.floor(i / 2) * cell;
-    const [dark, warm] = tints[i];
-    const g = cc.createLinearGradient(cx, cy, cx, cy + cell);
+  /* ---- awning canvas: stripes run down the slope, i.e. along v ---- */
+  for (let k = 0; k < AWNING_N; k++) {
+    const [x, y] = at(AWNING_0 + k);
+    const [a, b] = AWNING_PAIRS[k];
+    const stripe = CELL_W / 10;
+    for (let i = 0; i < 10; i++) {
+      cc.fillStyle = i % 2 ? a : b;
+      cc.fillRect(x + i * stripe, y, stripe, CELL_H);
+    }
+    cc.globalAlpha = 0.2;
+    cc.fillStyle = '#241d14';
+    for (let i = 0; i < 40; i++) {
+      cc.fillRect(x + rng.float(0, CELL_W), y + rng.float(0, CELL_H),
+        rng.float(1, 6), rng.float(1, 5));
+    }
+    cc.globalAlpha = 1;
+    cc.strokeStyle = 'rgba(0,0,0,0.35)';
+    cc.lineWidth = 3;
+    cc.strokeRect(x + 1, y + 1, CELL_W - 2, CELL_H - 2);
+  }
+
+  /* ---- lit shop interiors seen through the glazing ---- */
+  for (let k = 0; k < SHOP_N; k++) {
+    const [x, y] = at(SHOP_0 + k);
+    const [dark, warm] = INTERIOR_TINTS[k];
+    const g = cc.createLinearGradient(x, y, x, y + CELL_H);
     g.addColorStop(0, warm);
     g.addColorStop(0.55, dark);
     g.addColorStop(1, '#0d0f12');
     cc.fillStyle = g;
-    cc.fillRect(cx, cy, cell, cell);
-    const eg = ec.createLinearGradient(cx, cy, cx, cy + cell);
+    cc.fillRect(x, y, CELL_W, CELL_H);
+    const eg = ec.createLinearGradient(x, y, x, y + CELL_H);
     eg.addColorStop(0, warm);
     eg.addColorStop(0.7, dark);
     eg.addColorStop(1, '#000');
     ec.fillStyle = eg;
-    ec.fillRect(cx + 3, cy + 3, cell - 6, cell - 6);
+    ec.fillRect(x + 3, y + 3, CELL_W - 6, CELL_H - 6);
     // shelving and hanging goods, as silhouettes
-    for (let k = 0; k < 5; k++) {
-      const sy = cy + cell * (0.28 + k * 0.14);
+    for (let r = 0; r < 4; r++) {
+      const sy = y + CELL_H * (0.3 + r * 0.17);
       for (const ctx of [cc, ec]) {
         ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.fillRect(cx + cell * 0.08, sy, cell * 0.84, cell * 0.035);
+        ctx.fillRect(x + CELL_W * 0.06, sy, CELL_W * 0.88, CELL_H * 0.03);
       }
-      for (let j = 0; j < 6; j++) {
-        const bw = rng.float(cell * 0.05, cell * 0.11);
-        const bh = rng.float(cell * 0.04, cell * 0.09);
-        const bx = cx + cell * 0.1 + j * cell * 0.13 + rng.float(-4, 4);
+      for (let j = 0; j < 8; j++) {
+        const bw = rng.float(CELL_W * 0.03, CELL_W * 0.07);
+        const bh = rng.float(CELL_H * 0.05, CELL_H * 0.11);
+        const bx = x + CELL_W * 0.08 + j * CELL_W * 0.11 + rng.float(-4, 4);
         for (const ctx of [cc, ec]) {
           ctx.fillStyle = 'rgba(0,0,0,0.42)';
           ctx.fillRect(bx, sy - bh, bw, bh);
         }
       }
     }
-    // mullions
     for (const ctx of [cc, ec]) {
       ctx.strokeStyle = ctx === ec ? '#000' : '#5d5850';
-      ctx.lineWidth = cell * 0.03;
-      ctx.strokeRect(cx + 2, cy + 2, cell - 4, cell - 4);
+      ctx.lineWidth = CELL_H * 0.05;
+      ctx.strokeRect(x + 2, y + 2, CELL_W - 4, CELL_H - 4);
       ctx.beginPath();
-      ctx.moveTo(cx + cell / 2, cy);
-      ctx.lineTo(cx + cell / 2, cy + cell);
+      ctx.moveTo(x + CELL_W / 2, y);
+      ctx.lineTo(x + CELL_W / 2, y + CELL_H);
       ctx.stroke();
     }
   }
+
+  /* ---- corrugated roller shutters, half of them tagged ---- */
+  for (let k = 0; k < SHUTTER_N; k++) {
+    const [x, y] = at(SHUTTER_0 + k);
+    cc.fillStyle = '#6f7176';
+    cc.fillRect(x, y, CELL_W, CELL_H);
+    for (let yy = 0; yy < CELL_H; yy += 5) {
+      cc.fillStyle = 'rgba(0,0,0,0.3)';
+      cc.fillRect(x, y + yy, CELL_W, 2);
+      cc.fillStyle = 'rgba(255,255,255,0.1)';
+      cc.fillRect(x, y + yy + 2, CELL_W, 1);
+    }
+    if (k % 2 === 0) {
+      for (let i = 0; i < 2; i++) {
+        cc.save();
+        cc.globalAlpha = 0.75;
+        cc.fillStyle = TAG_COLOURS[rng.int(0, TAG_COLOURS.length - 1)];
+        cc.translate(x + rng.float(CELL_W * 0.2, CELL_W * 0.8),
+          y + rng.float(CELL_H * 0.3, CELL_H * 0.7));
+        cc.rotate(rng.float(-0.2, 0.2));
+        cc.beginPath();
+        cc.moveTo(-CELL_W * 0.16, 0);
+        cc.quadraticCurveTo(0, -CELL_H * 0.26, CELL_W * 0.16, 0);
+        cc.quadraticCurveTo(0, CELL_H * 0.2, -CELL_W * 0.16, 0);
+        cc.fill();
+        cc.restore();
+      }
+    }
+  }
+
   const map = new THREE.CanvasTexture(col);
   map.colorSpace = THREE.SRGBColorSpace;
   map.anisotropy = 8;
@@ -171,74 +227,15 @@ function shopGlassAtlas(rng) {
   em.colorSpace = THREE.SRGBColorSpace;
   em.anisotropy = 8;
   return new THREE.MeshStandardMaterial({
-    map, emissiveMap: em, emissive: new THREE.Color(0xffc98a), emissiveIntensity: 1.5,
-    roughness: 0.25, metalness: 0.3,
+    name: 'shopAtlas',
+    map,
+    emissiveMap: em,
+    emissive: new THREE.Color(0xffca7a),
+    emissiveIntensity: 1.2,
+    roughness: 0.5,
+    metalness: 0.12,
+    side: THREE.DoubleSide,
   });
-}
-
-/** 2x2 atlas of striped awning canvas. */
-function awningAtlas(rng) {
-  const S = 256;
-  const cell = S / 2;
-  const c = canvas2d(S);
-  const ctx = c.getContext('2d');
-  const pairs = [['#8d2b26', '#e9dcc2'], ['#1f4a33', '#e9dcc2'], ['#25406b', '#ded6c4'], ['#6b5a1d', '#f0e6cc']];
-  for (let i = 0; i < 4; i++) {
-    const cx = (i % 2) * cell, cy = Math.floor(i / 2) * cell;
-    const [a, b] = pairs[i];
-    const stripe = cell / 8;
-    for (let k = 0; k < 8; k++) {
-      ctx.fillStyle = k % 2 ? a : b;
-      ctx.fillRect(cx + k * stripe, cy, stripe, cell);
-    }
-    ctx.globalAlpha = 0.2;
-    ctx.fillStyle = '#241d14';
-    for (let k = 0; k < 40; k++) {
-      ctx.fillRect(cx + rng.float(0, cell), cy + rng.float(0, cell), rng.float(1, 6), rng.float(1, 5));
-    }
-    ctx.globalAlpha = 1;
-    ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(cx + 1, cy + 1, cell - 2, cell - 2);
-  }
-  const map = new THREE.CanvasTexture(c);
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.anisotropy = 8;
-  return new THREE.MeshStandardMaterial({ map, roughness: 0.85, metalness: 0, side: THREE.DoubleSide });
-}
-
-/** Corrugated roller shutter, tagged on about half the cells. */
-function shutterTexture(rng) {
-  const S = 256;
-  const c = canvas2d(S);
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#6f7176';
-  ctx.fillRect(0, 0, S, S);
-  for (let y = 0; y < S; y += 8) {
-    ctx.fillStyle = 'rgba(0,0,0,0.28)';
-    ctx.fillRect(0, y, S, 3);
-    ctx.fillStyle = 'rgba(255,255,255,0.10)';
-    ctx.fillRect(0, y + 3, S, 2);
-  }
-  const tags = ['#c8452f', '#2f6fc8', '#d8b32f', '#39b573'];
-  for (let i = 0; i < 3; i++) {
-    ctx.save();
-    ctx.globalAlpha = 0.75;
-    ctx.fillStyle = tags[rng.int(0, tags.length - 1)];
-    ctx.translate(rng.float(S * 0.2, S * 0.8), rng.float(S * 0.3, S * 0.7));
-    ctx.rotate(rng.float(-0.2, 0.2));
-    ctx.beginPath();
-    ctx.moveTo(-S * 0.2, 0);
-    ctx.quadraticCurveTo(0, -S * 0.13, S * 0.2, 0);
-    ctx.quadraticCurveTo(0, S * 0.1, -S * 0.2, 0);
-    ctx.fill();
-    ctx.restore();
-  }
-  const map = new THREE.CanvasTexture(c);
-  map.colorSpace = THREE.SRGBColorSpace;
-  map.wrapS = map.wrapT = THREE.RepeatWrapping;
-  map.anisotropy = 8;
-  return new THREE.MeshStandardMaterial({ map, roughness: 0.6, metalness: 0.45 });
 }
 
 export class Shopfronts {
@@ -247,10 +244,7 @@ export class Shopfronts {
     this.breakables = breakables;
     const art = new Rng(seed ^ 0x5f5e10d);
     this.M = {
-      sign: signAtlas(art),
-      glass: shopGlassAtlas(art),
-      awning: awningAtlas(art),
-      shutter: shutterTexture(art),
+      atlas: shopAtlas(art),
       pier: getMaterial('stone', { base: '#cdc4b2', mortar: '#b0a693', scale: 1.4 }),
       metal: getMaterial('paintedMetal', { seed: 1405, color: '#2b2f34' }),
     };
@@ -295,49 +289,47 @@ export class Shopfronts {
         [false, false, true, false, false, true]);
 
       /* glazing with a lit interior, set back behind the frame */
-      const cellI = rng.int(0, 3);
-      const gu = (cellI % 2) * 0.5, gv = 1 - (Math.floor(cellI / 2) + 1) * 0.5;
-      B(this.M.glass).quad(
+      const atlas = B(this.M.atlas);
+      const [gu, gv, gsu, gsv] = cellUV(SHOP_0 + rng.int(0, SHOP_N - 1));
+      atlas.quad(
         px + ax * (openW / 2) + ox * 0.1, riser, pz + az * (openW / 2) + oz * 0.1,
         -ax * openW, 0, -az * openW,
         0, openH - riser, 0,
-        0.5, 0.5, gu, gv,
+        gsu, gsv, gu, gv,
       );
 
       /* roller shutter on the shabby ones */
       if (shabby && rng.chance(0.55)) {
-        B(this.M.shutter).quad(
+        const [hu, hv, hsu, hsv] = cellUV(SHUTTER_0 + rng.int(0, SHUTTER_N - 1));
+        atlas.quad(
           px + ax * (openW / 2) + ox * 0.16, 0.05, pz + az * (openW / 2) + oz * 0.16,
           -ax * openW, 0, -az * openW,
           0, openH - 0.05, 0,
-          openW / 1.6, openH / 1.6,
+          hsu, hsv, hu, hv,
         );
       }
 
       /* fascia sign */
-      const si = (plot.signIndex + this.count) % SIGN_CELLS;
-      const su = (si % SIGN_COLS) / SIGN_COLS;
-      const sv = 1 - (Math.floor(si / SIGN_COLS) + 1) / SIGN_ROWS;
+      const [su, sv, ssu, ssv] = cellUV(SIGN_0 + ((plot.signIndex + this.count) % SIGN_N));
       const fascH = Math.min(0.72, parter.h - openH - 0.5);
       if (fascH > 0.24) {
-        B(this.M.sign).quad(
+        atlas.quad(
           px + ax * (w * 0.46) + ox * 0.38, openH + 0.86, pz + az * (w * 0.46) + oz * 0.38,
           -ax * w * 0.92, 0, -az * w * 0.92,
           0, fascH, 0,
-          1 / SIGN_COLS, 1 / SIGN_ROWS, su, sv,
+          ssu, ssv, su, sv,
         );
       }
 
       /* awning over about a third of them */
       if (rng.chance(0.36)) {
-        const ai = rng.int(0, 3);
-        const au = (ai % 2) * 0.5, av = 1 - (Math.floor(ai / 2) + 1) * 0.5;
+        const [au, av, asu, asv] = cellUV(AWNING_0 + rng.int(0, AWNING_N - 1));
         const reach = rng.float(1.1, 1.7);
-        B(this.M.awning).quad(
+        atlas.quad(
           px - ax * (openW / 2) + ox * 0.34, openH + 0.8, pz - az * (openW / 2) + oz * 0.34,
           ax * openW, 0, az * openW,
           ox * reach, -0.62, oz * reach,
-          0.5, 0.5, au, av,
+          asu, asv, au, av,
         );
         const m = B(this.M.metal);
         for (const sgn of [-1, 1]) {
@@ -353,16 +345,14 @@ export class Shopfronts {
         const bx = px + ox * rng.float(1.5, 2.3) + ax * rng.float(-w * 0.3, w * 0.3);
         const bz = pz + oz * rng.float(1.5, 2.3) + az * rng.float(-w * 0.3, w * 0.3);
         const brot = rot + rng.float(-0.7, 0.7);
-        const bi = rng.int(0, SIGN_CELLS - 1);
-        const bu = (bi % SIGN_COLS) / SIGN_COLS;
-        const bv = 1 - (Math.floor(bi / SIGN_COLS) + 1) / SIGN_ROWS;
+        const [bu, bv, bsu, bsv] = cellUV(SIGN_0 + rng.int(0, SIGN_N - 1));
         const bc = Math.cos(brot), bs = Math.sin(brot);
         for (const lean of [-1, 1]) {
-          B(this.M.sign).quad(
+          atlas.quad(
             bx + bc * 0.28 - bs * lean * 0.06, 0.06, bz - bs * 0.28 - bc * lean * 0.06,
             -bc * 0.56, 0, bs * 0.56,
             -bs * lean * 0.24, 0.82, -bc * lean * 0.24,
-            1 / SIGN_COLS, 1 / SIGN_ROWS, bu, bv,
+            bsu, bsv, bu, bv,
           );
         }
         const boards = [collision.add(bx, bz, 0.7, 0.55, 0, 0.9, 'prop', 'wood')];

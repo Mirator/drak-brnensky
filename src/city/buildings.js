@@ -71,15 +71,16 @@ export function buildHouses(group, collision, plots, rng, { breakables, seed, ch
     graffiti: getMaterial('graffitiPlaster', { seed: 1401 }),
     roofClay: getMaterial('roof'),
     roofSlate: getMaterial('roofSlate', { seed: 1402 }),
-    roofCopper: getMaterial('roofCopper', { seed: 1403 }),
+    /* Copper is reserved for the landmarks: giving houses a fourth roof
+     * material bought one more colour and cost a whole extra generated
+     * texture set plus a chunk bucket per cell it appeared in. */
     roofSeam: getMaterial('roofMetalSeam', { seed: 1404 }),
     metal: getMaterial('paintedMetal', { seed: 1405, color: '#2b2f34' }),
     glass: getMaterial('paneGlass', { seed: 1501, panesX: 2, panesY: 3 }),
   };
   label(MAT);
-  const roofMat = (kind) => (kind === 'slate' ? MAT.roofSlate
-    : kind === 'copper' ? MAT.roofCopper
-      : kind === 'seam' ? MAT.roofSeam : MAT.roofClay);
+  const roofMat = (kind) => (kind === 'slate' || kind === 'copper' ? MAT.roofSlate
+    : kind === 'seam' ? MAT.roofSeam : MAT.roofClay);
 
   const roofscape = new Roofscape(rng, MAT);
   const shopfronts = new Shopfronts(rng, { breakables, seed });
@@ -91,6 +92,7 @@ export function buildHouses(group, collision, plots, rng, { breakables, seed, ch
     } = mass;
     /** silhouette / detail bucket for this mass */
     const S = (m) => chunks.get(m, x, z, TIER.SILHOUETTE);
+    const N = (m) => chunks.get(m, x, z, TIER.NOSHADOW);
     const D = (m) => chunks.get(m, x, z, TIER.DETAIL);
     const skipPlusX = plot.side > 0 ? plot.neighbourRight : plot.neighbourLeft;
     const skipMinusX = plot.side > 0 ? plot.neighbourLeft : plot.neighbourRight;
@@ -166,7 +168,7 @@ export function buildHouses(group, collision, plots, rng, { breakables, seed, ch
         (face) => [(face === 0 || face === 1 ? d : w) / 2, 2, 0, 0],
         [false, false, false, false, false, true]);
       // parapet so rooftops still read as places you can be
-      const p = S(MAT.cornice);
+      const p = N(MAT.cornice);
       for (const [ox, oz, pw, pd] of [
         [0, -d / 2, w + 0.3, 0.42], [0, d / 2, w + 0.3, 0.42],
         [-w / 2, 0, 0.42, d + 0.3], [w / 2, 0, 0.42, d + 0.3],
@@ -185,7 +187,7 @@ export function buildHouses(group, collision, plots, rng, { breakables, seed, ch
     /* ---- firewall between this plot and the one to its right ---- */
     if (skipPlusX && !isWing) {
       const c = Math.cos(rot), s = Math.sin(rot);
-      S(MAT.cornice).box(
+      N(MAT.cornice).box(
         x + c * w / 2, eaves - 0.3, z - s * w / 2,
         0.34, ridgeH * 0.55 + 0.9, d + 0.3, rot,
         (face) => [(face === 0 || face === 1 ? d : 0.4) / 1.6, 1.4, 0, 0],

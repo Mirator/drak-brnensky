@@ -54,6 +54,8 @@ const GOLEM_PLATES = [0.8, 0.65, 0.5, 0.35, 0.2];
 const STAGGER_FRAC = { whelp: 0.34, spitter: 0.3, golem: 0.18, boss: 0.09 };
 /** No creature can be staggered again inside this window. */
 const STAGGER_LOCKOUT = 1.4;
+/** Past this distance the small archetypes stop casting shadows. */
+const SHADOW_LOD_DIST = 55;
 /** States an action returns to when it finishes, instead of falling back to
  * 'chase' — a Chrlič that spits from a ledge stays on the ledge. */
 const RESUME_STATES = new Set(['perch', 'fly']);
@@ -177,19 +179,28 @@ export class EnemyManager {
   /* ---------------------------------------------------------------- */
   _create(typeId) {
     const model = buildCreature(ARCHETYPES[typeId]);
-    model.root.traverse((o) => {
-      if (o.isMesh) {
-        o.castShadow = true;
-        o.receiveShadow = true;
-        /* Skinned bounds are computed in bind space, so a spread wing or a
-         * whipping tail would poke outside a tight sphere and pop. Each
-         * archetype therefore publishes a deliberately generous
-         * `boundingRadius` (see PartBuilder#build) that already covers its
-         * widest pose, and culling stays on — worth having in a scene that
-         * is fighting for draw calls. */
-        o.frustumCulled = true;
-      }
-    });
+    /* Shadows are the expensive half of a creature: three cascades means
+     * every casting mesh is drawn four times in total. So the fine detail
+     * — teeth, horns, osteoderm keels, claws, vents, belly banding — lives
+     * in its own 'detail' mesh that never casts (one extra draw call, only
+     * on the dragon, against ~2.3k triangles saved three times over), and
+     * `_shadowLod()` drops shadow casting entirely for the small archetypes
+     * once they are far enough away for their shadow to be a smudge.
+     *
+     * Skinned bounds are computed in bind space, so a spread wing or a
+     * whipping tail would poke outside a tight sphere and pop. Each
+     * archetype publishes a deliberately generous `boundingRadius` (see
+     * PartBuilder#build) that already covers its widest pose, so frustum
+     * culling stays on — it takes the opaque draw and all three shadow
+     * draws with it when a creature is off screen. */
+    const casters = [];
+    for (const key of Object.keys(model.meshes)) {
+      const mesh = model.meshes[key];
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = true;
+      mesh.castShadow = key !== 'detail';
+      if (mesh.castShadow) casters.push(mesh);
+    }
     const e = {
       model,
       object: model.root,
@@ -199,6 +210,8 @@ export class EnemyManager {
       look: { yaw: 0, pitch: 0 },
       a: newPoseState(),
     };
+    e.casters = casters;
+    e.castOn = true;
     e.bar = makeHealthBar(typeId === 'golem' ? 1.8 : 1.45);
     model.root.add(e.bar.group);
     model.root.visible = false;
@@ -1241,12 +1254,26 @@ export class EnemyManager {
       e.look.yaw = ((toPlayerFacing - e.facing + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
       e.look.pitch = Math.atan2(info.pc.y - eyeY, Math.max(1, distFlat));
 
+      this._shadowLod(e, distFlat);
       const planar = Math.hypot(e.vel.x, e.vel.z);
       e.run = clamp01(planar / Math.max(1, e.speed));
       e.model.def.animate(e, dt, this._animCtx(ctx));
       this._shade(e);
       this._updateBar(e, ctx.camera);
     }
+  }
+
+  /**
+   * Shadow level of detail. The sun's shadow camera spans 156 m, so a whelp
+   * 55 m out is a couple of pixels of blur — not worth three cascade draws
+   * of its whole body. The dragon always casts: its shadow across the square
+   * is half the reason it reads as huge.
+   */
+  _shadowLod(e, distFlat) {
+    const want = e.typeId === 'boss' ? true : distFlat < SHADOW_LOD_DIST;
+    if (want === e.castOn) return;
+    e.castOn = want;
+    for (let i = 0; i < e.casters.length; i++) e.casters[i].castShadow = want;
   }
 
   _animCtx(ctx) {
