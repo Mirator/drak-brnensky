@@ -1272,6 +1272,7 @@ window.__brno = {
   audio,
   collision,
   physics,
+  get vfx() { return vfx; },
   get postStackOk() { return postStackOk; },
   get postStackProbe() { return postStackProbe; },
   get lastShot() { return { postStack: lastShotUsedPostStack, fellBack: lastShotFellBack }; },

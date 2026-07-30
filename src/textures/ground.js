@@ -81,7 +81,12 @@ function paintCobbles(seed, { size, pattern = 'running', trackGrooves = false } 
     grain(ctx, S, S, mode === 'albedo' ? 18 : 9, rng);
   };
 
-  return dual(seed, S, S, draw);
+  // `speckle` already carries the per-sett blotch variation used to paint
+  // the setts themselves (same (u,v) domain, 0..1 across the tile) -- reuse
+  // it as the roughness sampler too, instead of finishGround()'s flat
+  // fallback, so worn/polished setts read as a real reflectance difference
+  // rather than a uniform sheen.
+  return { ...dual(seed, S, S, draw), sampler: speckle };
 }
 
 function finishGround(color, height, { roughBase = 0.85, roughVar = 0.18, metal = 0, normalStrength = 1.4, aoStrength = 1.3, sampler } = {}) {
@@ -109,12 +114,27 @@ export function makeCobbleTexture(size = 512) {
   return color;
 }
 
+/** Real-world metres spanned by one tile of the running-bond pattern
+ * (`cobbleRunning` / `cobbleTramTrack`): the draw loop lays 20 setts across
+ * the tile edge (`s = S / 20`) and a real granite sett module (Brno
+ * old-town paving) is about 0.10 m, so 20 * 0.10 = 2.0 m per tile. Pass this
+ * (or a multiple of it) to `groundRepeat()` in materials.js to size the
+ * texture repeat from a real surface footprint instead of guessing. */
+export const SETT_TILE_M = 2.0;
+
+/** Real-world metres per tile of the fan-bond pattern (`cobbleFan`): setts
+ * there are drawn at `sw = S * 0.032` of the tile edge, so at the same 0.10 m
+ * sett module, one tile spans 0.10 / 0.032 ~= 3.1 m. Approximate -- the fan
+ * layout isn't a uniform grid like the running bond, so sett size varies
+ * slightly by ring. */
+export const FAN_SETT_TILE_M = 3.1;
+
 /** Full PBR cobble material for new call sites: real granite-sett relief,
  * fan pattern for squares, running bond for streets, optional worn
  * tram-track grooves. */
 export function makeCobbleMaterial({ seed = 1234, pattern = 'running', trackGrooves = false, size = tierSize(1024) } = {}) {
-  const { color, height } = paintCobbles(seed, { size, pattern, trackGrooves });
-  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.88, roughVar: 0.16, normalStrength: 1.7, aoStrength: 1.5 });
+  const { color, height, sampler } = paintCobbles(seed, { size, pattern, trackGrooves });
+  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.88, roughVar: 0.16, normalStrength: 1.7, aoStrength: 1.5, sampler });
   return new THREE.MeshStandardMaterial({
     map, normalMap: normal, normalScale: new THREE.Vector2(1, 1),
     roughnessMap: orm, metalnessMap: orm, aoMap: orm,
@@ -125,6 +145,14 @@ export function makeCobbleMaterial({ seed = 1234, pattern = 'running', trackGroo
 /* ------------------------------------------------------------------ */
 /* asphalt — patched repairs, painted line wear                        */
 /* ------------------------------------------------------------------ */
+/** Cross-checked from the one fixed-width feature this texture draws: the
+ * faded lane/edge line is `S * 0.02` wide, and a standard road-marking line
+ * is ~0.12 m wide, so 0.12 / 0.02 = 6.0 m per tile. (The random patch-repair
+ * width, 8-20% of tile for a plausible ~1 m real patch, lands in the same
+ * 5-12 m range, which is a reasonable cross-check for a non-gridded
+ * texture.) */
+export const ASPHALT_TILE_M = 6.0;
+
 export function makeAsphaltMaterial({ seed = 55, size = tierSize(512) } = {}) {
   const S = size;
   const rngNoise = new Rng(seed);
@@ -166,8 +194,16 @@ export function makeAsphaltMaterial({ seed = 55, size = tierSize(512) } = {}) {
 /* ------------------------------------------------------------------ */
 /* kerbstones, tactile paving, drain covers, slabs, gravel, grass       */
 /* ------------------------------------------------------------------ */
+/** No baked repeat unit exists in this texture (it's continuous
+ * stone-surface noise, not a discrete grid) -- 1 tile is documented here as
+ * 1 standard kerbstone length (~1.0 m), the natural mapping for a texture
+ * meant to be applied once per kerbstone segment. */
+export const KERB_TILE_M = 1.0;
+
 export function makeKerbMaterial({ seed = 61, size = tierSize(256) } = {}) {
   const S = size;
+  const rngNoise = new Rng(seed + 9);
+  const weather = makeFbm(rngNoise, { cells: 5, octaves: 2 });
   const draw = (ctx, rng, mode) => {
     ctx.fillStyle = pick(mode, '#b7b2a6', 170);
     ctx.fillRect(0, 0, S, S);
@@ -181,12 +217,18 @@ export function makeKerbMaterial({ seed = 61, size = tierSize(256) } = {}) {
     grain(ctx, S, S, mode === 'albedo' ? 12 : 6, rng);
   };
   const { color, height } = dual(seed, S, S, draw);
-  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.75, roughVar: 0.1, normalStrength: 1.2, aoStrength: 1.2 });
+  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.75, roughVar: 0.1, normalStrength: 1.2, aoStrength: 1.2, sampler: weather });
   return new THREE.MeshStandardMaterial({ map, normalMap: normal, normalScale: new THREE.Vector2(1, 1), roughnessMap: orm, metalnessMap: orm, aoMap: orm, roughness: 1, metalness: 1, envMapIntensity: 0.5 });
 }
 
+/** 8x8 blister-stud grid (`d = S / 8`) at the ~50 mm centre-to-centre pitch
+ * standard tactile paving studs use -> 8 * 0.05 = 0.4 m per tile. */
+export const TACTILE_TILE_M = 0.4;
+
 export function makeTactilePavingMaterial({ seed = 62, size = tierSize(256), color: hue = '#a8402f' } = {}) {
   const S = size;
+  const rngNoise = new Rng(seed + 9);
+  const weather = makeFbm(rngNoise, { cells: 4, octaves: 2 });
   const draw = (ctx, rng, mode) => {
     ctx.fillStyle = pick(mode, hue, 150);
     ctx.fillRect(0, 0, S, S);
@@ -200,12 +242,20 @@ export function makeTactilePavingMaterial({ seed = 62, size = tierSize(256), col
     grain(ctx, S, S, mode === 'albedo' ? 10 : 4, rng);
   };
   const { color, height } = dual(seed, S, S, draw);
-  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.7, roughVar: 0.1, normalStrength: 1.6, aoStrength: 1.3 });
+  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.7, roughVar: 0.1, normalStrength: 1.6, aoStrength: 1.3, sampler: weather });
   return new THREE.MeshStandardMaterial({ map, normalMap: normal, normalScale: new THREE.Vector2(1, 1), roughnessMap: orm, metalnessMap: orm, aoMap: orm, roughness: 1, metalness: 1, envMapIntensity: 0.5 });
 }
 
+/** This texture draws one complete grate (a fixed 6x6 bar grid across the
+ * whole canvas), not a repeating pattern -- it's a single-prop texture
+ * meant to map 1:1 onto one physical gully/drain cover, a standard 0.6 m x
+ * 0.6 m unit in Central European streetscapes. */
+export const DRAIN_TILE_M = 0.6;
+
 export function makeDrainCoverMaterial({ seed = 63, size = tierSize(256) } = {}) {
   const S = size;
+  const rngNoise = new Rng(seed + 9);
+  const wear = makeFbm(rngNoise, { cells: 4, octaves: 2 });
   const draw = (ctx, rng, mode) => {
     ctx.fillStyle = pick(mode, '#3a3a3c', 120);
     ctx.fillRect(0, 0, S, S);
@@ -223,9 +273,13 @@ export function makeDrainCoverMaterial({ seed = 63, size = tierSize(256) } = {})
     grain(ctx, S, S, mode === 'albedo' ? 10 : 5, rng);
   };
   const { color, height } = dual(seed, S, S, draw);
-  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.5, roughVar: 0.15, metal: 0.85, normalStrength: 1.8, aoStrength: 1.6 });
+  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.5, roughVar: 0.15, metal: 0.85, normalStrength: 1.8, aoStrength: 1.6, sampler: wear });
   return new THREE.MeshStandardMaterial({ map, normalMap: normal, normalScale: new THREE.Vector2(1, 1), roughnessMap: orm, metalnessMap: orm, aoMap: orm, roughness: 1, metalness: 1, envMapIntensity: 1 });
 }
+
+/** 4x4 slab grid (`s = S / 4`) at a 0.40 m real paving-slab module (typical
+ * Brno concrete/granite pavement slab) -> 4 * 0.40 = 1.6 m per tile. */
+export const SLAB_TILE_M = 1.6;
 
 export function makePavementSlabMaterial({ seed = 64, size = tierSize(512) } = {}) {
   const S = size;
@@ -254,10 +308,18 @@ export function makePavementSlabMaterial({ seed = 64, size = tierSize(512) } = {
   return new THREE.MeshStandardMaterial({ map, normalMap: normal, normalScale: new THREE.Vector2(1, 1), roughnessMap: orm, metalnessMap: orm, aoMap: orm, roughness: 1, metalness: 1, envMapIntensity: 0.5 });
 }
 
+/** Approximate -- scattered stones (radius 1..3.4px on the S=512 default
+ * canvas) at a ~15 mm target real gravel-stone diameter give roughly
+ * 0.015 / ((1+3.4)*2/512/2) ~= 1.7 m per tile. Loose-fill textures like this
+ * don't have a hard grid the way setts/slabs do, so treat this as a
+ * reasonable default rather than an exact derivation. */
+export const GRAVEL_TILE_M = 1.7;
+
 export function makeGravelMaterial({ seed = 65, size = tierSize(512) } = {}) {
   const S = size;
   const rngNoise = new Rng(seed);
   const worley = makeWorley(rngNoise, 22);
+  const roughSampler = (u, v) => worley(u * 22, v * 22).f1;
   const draw = (ctx, rng, mode) => {
     ctx.fillStyle = pick(mode, '#82786c', 130);
     ctx.fillRect(0, 0, S, S);
@@ -272,15 +334,23 @@ export function makeGravelMaterial({ seed = 65, size = tierSize(512) } = {}) {
     grain(ctx, S, S, mode === 'albedo' ? 20 : 10, rng);
   };
   const { color, height } = dual(seed, S, S, draw);
-  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.95, roughVar: 0.05, normalStrength: 2.0, aoStrength: 1.6 });
+  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.95, roughVar: 0.05, normalStrength: 2.0, aoStrength: 1.6, sampler: roughSampler });
   return new THREE.MeshStandardMaterial({ map, normalMap: normal, normalScale: new THREE.Vector2(1, 1), roughnessMap: orm, metalnessMap: orm, aoMap: orm, roughness: 1, metalness: 1, envMapIntensity: 0.3 });
 }
+
+/** Grass/terrain patchiness has no discrete real-world unit the way paving
+ * does -- this is a documented tiling-scale convention (large enough that
+ * the worn-dirt patch noise reads as natural terrain variegation rather
+ * than a visibly repeating tile), not a derivation from a literal blade
+ * size. */
+export const GRASS_TILE_M = 3.0;
 
 export function makeGrassMaterial({ seed = 66, size = tierSize(512) } = {}) {
   const S = size;
   const rngNoise = new Rng(seed);
   const patch = makeFbm(rngNoise, { cells: 4, octaves: 4 });
   const pathField = makeFbm(new Rng(seed + 1), { cells: 3, octaves: 2 });
+  const roughSampler = (u, v) => patch(u * 4, v * 4);
   const draw = (ctx, rng, mode) => {
     ctx.fillStyle = pick(mode, '#3e5c33', 120);
     ctx.fillRect(0, 0, S, S);
@@ -304,7 +374,7 @@ export function makeGrassMaterial({ seed = 66, size = tierSize(512) } = {}) {
     grain(ctx, S, S, mode === 'albedo' ? 16 : 8, rng);
   };
   const { color, height } = dual(seed, S, S, draw);
-  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.96, roughVar: 0.04, normalStrength: 1.0, aoStrength: 1.2 });
+  const { map, normal, orm } = finishGround(color, height, { roughBase: 0.96, roughVar: 0.04, normalStrength: 1.0, aoStrength: 1.2, sampler: roughSampler });
   return new THREE.MeshStandardMaterial({ map, normalMap: normal, normalScale: new THREE.Vector2(1, 1), roughnessMap: orm, metalnessMap: orm, aoMap: orm, roughness: 1, metalness: 1, envMapIntensity: 0.25 });
 }
 

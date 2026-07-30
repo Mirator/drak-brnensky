@@ -226,12 +226,18 @@ export const GradeShader = {
   name: 'GradeShader',
   uniforms: {
     tDiffuse: { value: null },
-    uLift: { value: new THREE.Vector3(0.008, 0.014, 0.030) },
+    /* Lift halved and the contrast raised after the first real captures:
+     * post-street-masarykova and post-petrov-front had no true blacks at
+     * all. Most of that was fog density, but a 0.030 blue lift on top of it
+     * meant even fully shadowed geometry sat well off zero. Pivot dropped
+     * to 0.40 so more of the frame falls on the darkening side of the
+     * S-curve. */
+    uLift: { value: new THREE.Vector3(0.004, 0.008, 0.020) },
     uGamma: { value: new THREE.Vector3(1.0, 1.0, 1.02) },
     uGain: { value: new THREE.Vector3(1.045, 1.005, 0.965) },
     uSaturation: { value: 1.12 },
-    uContrast: { value: 1.14 },
-    uPivot: { value: 0.42 },
+    uContrast: { value: 1.22 },
+    uPivot: { value: 0.40 },
     uShadowTint: { value: new THREE.Color(0x4d74c8) },
     uHighlightTint: { value: new THREE.Color(0xffd7a8) },
     uShadowWeight: { value: 0.22 },

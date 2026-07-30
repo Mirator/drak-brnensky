@@ -1,5 +1,8 @@
 import * as THREE from 'three';
 import { getMaterial } from '../materials.js';
+/* Real-world tile sizes for the ground generators. A namespace import so a
+ * change to that module's export set can never break the city build. */
+import * as groundTiles from '../textures/ground.js';
 import { makeTexture } from '../textures.js';
 import { Batches, label } from './mesh.js';
 import {
@@ -22,6 +25,38 @@ const PAVE = 3.2;         // pavement width either side of the carriageway
 const KERB_H = 0.11;      // real kerb step
 const GAUGE = 1.435;      // standard tram gauge, per the dossier
 const TRACK_W = 3.0;      // paved strip per tram track
+
+/**
+ * Metres of world per texture tile, per surface.
+ *
+ * These are not free parameters. Each generator lays a fixed number of units
+ * across its tile, so the tile size is what sets the real-world size of a
+ * sett, a slab or a tactile blister — get it wrong and correct-looking fan
+ * bond reads as shopping-centre floor tiling.
+ *
+ * `src/textures/ground.js` publishes the authoritative figure for every
+ * generator it owns (`SETT_TILE_M`, `FAN_SETT_TILE_M`, ...), derived from a
+ * 0.10 m granite sett module, so those are consumed rather than guessed
+ * here. Asphalt and grass are noise rather than units and keep a large tile
+ * precisely so the repeat does not read.
+ */
+const tileM = (name, fallback) => (typeof groundTiles[name] === 'number'
+  ? groundTiles[name] : fallback);
+
+const TILE = {
+  fan: tileM('FAN_SETT_TILE_M', 3.1),
+  sett: tileM('SETT_TILE_M', 2.0),
+  track: tileM('SETT_TILE_M', 2.0),
+  slab: tileM('SLAB_TILE_M', 1.6),
+  kerb: tileM('KERB_TILE_M', 1.0),
+  tactile: tileM('TACTILE_TILE_M', 0.4),
+  drain: tileM('DRAIN_TILE_M', 0.6),
+  gravelPath: tileM('GRAVEL_TILE_M', 1.7),
+  dirtPath: tileM('GRAVEL_TILE_M', 1.7) * 0.7,
+  asphalt: 6,
+  grass: 6,
+  rail: 0.6,
+};
 
 /* layered heights, spaced far enough apart not to z-fight at range */
 const Y = {
@@ -343,9 +378,10 @@ export function buildGround(group, collision, painter, rng, { puddles }) {
   for (const p of PLAZAS) {
     const [cx, cz, w, d] = p.r;
     if (p.type !== FLAG.PARK) continue;
-    flatRect(B(M.grass), cx, cz, w, d, Y.grass, 6);
+    flatRect(B(M.grass), cx, cz, w, d, Y.grass, TILE.grass);
     for (const path of parkPaths(p, rng)) {
-      ribbon(B(M.gravel), path.pts, path.w / 2, Y.gravel, path.dirt ? 2 : 3);
+      ribbon(B(M.gravel), path.pts, path.w / 2, Y.gravel,
+        path.dirt ? TILE.dirtPath : TILE.gravelPath);
     }
   }
 
@@ -353,7 +389,9 @@ export function buildGround(group, collision, painter, rng, { puddles }) {
   for (const p of PLAZAS) {
     const [cx, cz, w, d] = p.r;
     if (p.type !== FLAG.PLAZA) continue;
-    flatRect(B(p.paving === 'slab' ? M.slab : M.fan), cx, cz, w, d, Y.plaza, 8);
+    const slabbed = p.paving === 'slab';
+    flatRect(B(slabbed ? M.slab : M.fan), cx, cz, w, d, Y.plaza,
+      slabbed ? TILE.slab : TILE.fan);
   }
 
   /* ---- streets ---- */
@@ -361,14 +399,15 @@ export function buildGround(group, collision, painter, rng, { puddles }) {
   for (const r of ROADS) {
     const carriage = r.paving === 'asphalt' ? M.asphalt : M.sett;
     const pave = paveWidth(r);
-    ribbon(B(carriage), r.pts, r.w / 2, Y.road, 6);
+    ribbon(B(carriage), r.pts, r.w / 2, Y.road,
+      r.paving === 'asphalt' ? TILE.asphalt : TILE.sett);
 
     for (const side of [-1, 1]) {
       const centre = offsetPolyline(r.pts, side * (r.w / 2 + pave / 2));
-      ribbon(B(M.slab), centre, pave / 2, Y.pavement, 4);
+      ribbon(B(M.slab), centre, pave / 2, Y.pavement, TILE.slab);
       // kerb: a real vertical step facing the carriageway
       const inner = offsetPolyline(r.pts, side * (r.w / 2 + 0.02));
-      upstand(B(M.kerb), inner, 0, KERB_H, 1.2, side > 0 ? 1 : -1);
+      upstand(B(M.kerb), inner, 0, KERB_H, TILE.kerb, side > 0 ? 1 : -1);
       // pavement colliders so footsteps and standing height are right
       const segs = centre;
       for (let i = 0; i < segs.length - 1; i++) {
@@ -383,10 +422,10 @@ export function buildGround(group, collision, painter, rng, { puddles }) {
     if (r.tram) {
       for (const off of trackOffsets(r)) {
         const centre = off === 0 ? r.pts : offsetPolyline(r.pts, off);
-        ribbon(B(M.track), centre, TRACK_W / 2, Y.track, 6);
+        ribbon(B(M.track), centre, TRACK_W / 2, Y.track, TILE.track);
         for (const g of [-GAUGE / 2, GAUGE / 2]) {
           const rail = offsetPolyline(centre, g);
-          ribbon(B(M.rail), rail, 0.036, Y.rail, 0.6, 1);
+          ribbon(B(M.rail), rail, 0.036, Y.rail, TILE.rail, 1);
           upstand(B(M.rail), rail, Y.road, Y.rail - Y.road, 0.5, 1);
           upstand(B(M.rail), rail, Y.road, Y.rail - Y.road, 0.5, -1);
         }
@@ -402,7 +441,8 @@ export function buildGround(group, collision, painter, rng, { puddles }) {
         const len = Math.hypot(near[0] - p[0], near[1] - p[1]) || 1;
         const nx = -(near[1] - p[1]) / len, nz = (near[0] - p[0]) / len;
         const off = side * (r.w / 2 + pave / 2);
-        flatRect(B(M.tactile), p[0] + nx * off, p[1] + nz * off, 2.0, pave * 0.8, Y.tactile, 1, rot);
+        flatRect(B(M.tactile), p[0] + nx * off, p[1] + nz * off,
+          2.0, pave * 0.8, Y.tactile, TILE.tactile, rot);
       }
     }
 
@@ -419,7 +459,9 @@ export function buildGround(group, collision, painter, rng, { puddles }) {
       }
     }
   }
-  for (const [x, z] of drains) flatRect(B(M.drain), x, z, 0.62, 0.62, Y.drain, 0.62);
+  for (const [x, z] of drains) {
+    flatRect(B(M.drain), x, z, TILE.drain, TILE.drain, Y.drain, TILE.drain);
+  }
 
   /* ---- puddles ---- */
   for (const [x, z, rad] of puddles) {

@@ -160,6 +160,8 @@ export function makeSlateCopperMaterial(seed = 202, { copper = true } = {}) {
 /** Standing-seam metal roof — trams sheds, kiosks, modern infill. */
 export function makeMetalSeamRoofMaterial(seed = 303) {
   const S = tierSize(256);
+  const rngNoise = new Rng(seed + 5);
+  const weather = makeFbm(rngNoise, { cells: 4, octaves: 2 });
   const draw = (ctx, rng, mode) => {
     ctx.fillStyle = mode === 'albedo' ? '#7c8388' : `rgb(${H_TILE},${H_TILE},${H_TILE})`;
     ctx.fillRect(0, 0, S, S);
@@ -179,7 +181,7 @@ export function makeMetalSeamRoofMaterial(seed = 303) {
   const nmap = new THREE.CanvasTexture(normal);
   nmap.wrapS = nmap.wrapT = THREE.RepeatWrapping; nmap.anisotropy = 8; nmap.colorSpace = THREE.NoColorSpace;
   const ao = aoFromHeight(height, { strength: 1.1 });
-  const orm = packORM(S, S, { ao, rough: noiseGray(S, S, () => 0.5, { base: 0.4, variation: 0.1 }), metal: 0.85 });
+  const orm = packORM(S, S, { ao, rough: noiseGray(S, S, weather, { base: 0.4, variation: 0.1 }), metal: 0.85 });
   const ormMap = new THREE.CanvasTexture(orm);
   ormMap.wrapS = ormMap.wrapT = THREE.RepeatWrapping; ormMap.anisotropy = 8; ormMap.colorSpace = THREE.NoColorSpace;
   return new THREE.MeshStandardMaterial({

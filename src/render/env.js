@@ -18,6 +18,85 @@ import * as THREE from 'three';
    PMREM texture.
    ================================================================== */
 
+/* ------------------------------------------------------------------ */
+/* readback instrumentation                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * IEEE 754 half → float. Needed because every buffer in this pipeline is
+ * HalfFloatType, and `readRenderTargetPixels` hands those back as raw
+ * Uint16 that mean nothing until decoded.
+ */
+export function decodeHalf(h) {
+  const sign = (h & 0x8000) ? -1 : 1;
+  const exponent = (h & 0x7c00) >> 10;
+  const fraction = h & 0x03ff;
+  if (exponent === 0) return sign * 6.103515625e-5 * (fraction / 1024);
+  if (exponent === 31) return fraction ? NaN : sign * Infinity;
+  return sign * (2 ** (exponent - 15)) * (1 + fraction / 1024);
+}
+
+/**
+ * Reads a patch out of a render target and returns luminance statistics.
+ *
+ * This exists because the pipeline is unobservable from here: the only way
+ * to answer "is this buffer actually black" without a browser is to make
+ * the renderer tell us. Reports `nan` separately from `mean` on purpose —
+ * a NaN-filled buffer and a black buffer look identical to a "non-zero"
+ * test, which is exactly how the fog bug hid.
+ *
+ * Causes a GPU sync stall, so this is boot-time and on-demand only.
+ */
+export function probeRenderTarget(renderer, target, options = {}) {
+  if (!renderer || !target) return { ok: false, error: 'no renderer or target' };
+
+  const size = Math.max(1, Math.min(options.size || 16, target.width, target.height));
+  const x = options.x !== undefined ? options.x : Math.max(0, Math.floor((target.width - size) / 2));
+  const y = options.y !== undefined ? options.y : Math.max(0, Math.floor((target.height - size) / 2));
+  const count = size * size;
+
+  const type = target.texture.type;
+  const isHalf = type === THREE.HalfFloatType;
+  const isFloat = type === THREE.FloatType;
+  let buffer;
+  if (isHalf) buffer = new Uint16Array(count * 4);
+  else if (isFloat) buffer = new Float32Array(count * 4);
+  else buffer = new Uint8Array(count * 4);
+  const scale = buffer instanceof Uint8Array ? 1 / 255 : 1;
+
+  try {
+    renderer.readRenderTargetPixels(target, x, y, size, size, buffer, options.face);
+  } catch (error) {
+    return { ok: false, error: String(error && error.message ? error.message : error) };
+  }
+
+  let sum = 0;
+  let max = 0;
+  let nan = 0;
+  for (let i = 0; i < count; i++) {
+    const o = i * 4;
+    const r = isHalf ? decodeHalf(buffer[o]) : buffer[o] * scale;
+    const g = isHalf ? decodeHalf(buffer[o + 1]) : buffer[o + 1] * scale;
+    const b = isHalf ? decodeHalf(buffer[o + 2]) : buffer[o + 2] * scale;
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    if (!Number.isFinite(lum)) { nan++; continue; }
+    sum += lum;
+    if (lum > max) max = lum;
+  }
+  const finite = count - nan;
+  return {
+    ok: true,
+    mean: finite ? sum / finite : 0,
+    max,
+    nan,
+    samples: count,
+  };
+}
+
+const fmtProbe = (p) => (p.ok
+  ? `mean ${p.mean.toFixed(4)} max ${p.max.toFixed(3)}${p.nan ? ` NaN ${p.nan}/${p.samples}` : ''}`
+  : `FAILED (${p.error})`);
+
 export function buildEnvironment(renderer, sky, { resolution = 256, intensity = 0.9 } = {}) {
   const cubeRT = new THREE.WebGLCubeRenderTarget(resolution, {
     type: THREE.HalfFloatType,
@@ -46,6 +125,23 @@ export function buildEnvironment(renderer, sky, { resolution = 256, intensity = 
   pmrem.compileCubemapShader();
   const envRT = pmrem.fromCubemap(cubeRT.texture);
 
+  /* Verify the bake before throwing the source away. "scene.environment is a
+   * Texture with the right mapping" is not evidence that it contains
+   * anything — a correctly-configured but black env map contributes exactly
+   * zero and is indistinguishable from IBL being switched off. Measure it. */
+  const probe = {
+    // +Y is straight up (dark zenith), +X is horizon (should be bright)
+    cubeUp: probeRenderTarget(renderer, cubeRT, { size: 16, face: 2 }),
+    cubeHorizon: probeRenderTarget(renderer, cubeRT, { size: 16, face: 0 }),
+    pmrem: probeRenderTarget(renderer, envRT, { size: 16 }),
+  };
+  const summary = `cube+Y[${fmtProbe(probe.cubeUp)}] cube+X[${fmtProbe(probe.cubeHorizon)}] pmrem[${fmtProbe(probe.pmrem)}]`;
+  if (!probe.pmrem.ok || probe.pmrem.nan > 0 || probe.pmrem.mean < 1e-4) {
+    console.error(`[render] IBL bake looks EMPTY or invalid — ${summary}`);
+  } else {
+    console.info(`[render] IBL bake ok — ${summary}`);
+  }
+
   pmrem.dispose();
   cubeRT.dispose();
   captureMesh.geometry.dispose();
@@ -56,6 +152,8 @@ export function buildEnvironment(renderer, sky, { resolution = 256, intensity = 
     renderTarget: envRT,
     /** Baseline intensity, so the quality/settings layer can scale it. */
     intensity,
+    /** Measured bake statistics — see the console line logged at boot. */
+    probe,
     dispose() {
       envRT.dispose();
     },

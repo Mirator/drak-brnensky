@@ -9,6 +9,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { GodRaysShader, DofShader, GradeShader, SharpenShader } from './shaders.js';
 import { TemporalAccumulationPass } from './taa.js';
 import { LinearDepthPass } from './depth.js';
+import { probeRenderTarget } from './env.js';
 import { SUN_DIR } from './sky.js';
 import { SHADOW_PRESETS } from './lighting.js';
 
@@ -66,7 +67,7 @@ export const QUALITY_PRESETS = {
     godRays: false,
     dof: false,
     bloom: true,
-    bloomStrength: 0.45,
+    bloomStrength: 0.38,
     smaa: true,
     taa: false,
     grade: true,
@@ -81,7 +82,7 @@ export const QUALITY_PRESETS = {
     godRays: true,
     dof: false,
     bloom: true,
-    bloomStrength: 0.5,
+    bloomStrength: 0.42,
     smaa: true,
     taa: false,
     grade: true,
@@ -96,7 +97,7 @@ export const QUALITY_PRESETS = {
     godRays: true,
     dof: true,
     bloom: true,
-    bloomStrength: 0.55,
+    bloomStrength: 0.45,
     smaa: true,
     taa: true,
     grade: true,
@@ -111,7 +112,7 @@ export const QUALITY_PRESETS = {
     godRays: true,
     dof: true,
     bloom: true,
-    bloomStrength: 0.58,
+    bloomStrength: 0.48,
     smaa: true,
     taa: true,
     grade: true,
@@ -230,11 +231,14 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
   const dofPass = new ShaderPass(DofShader);
   dofPass.uniforms.tDepth.value = depthPass.texture;
 
-  // Threshold is in HDR luminance. Sunlit plaster lands around 0.7, the
-  // boosted lamp bulbs around 2, the sun disc at 9 — so 0.9 catches the
-  // light sources and muzzle flashes and leaves the walls alone.
+  /* Threshold is in HDR luminance. My original estimate of 0.7 for sunlit
+   * plaster was too low — post-street-masarykova shows real bleed off the
+   * sun-facing facades at threshold 0.9, so those are clearing it. Raised to
+   * 1.15, which still leaves the boosted lamp bulbs (~2.2), muzzle flashes,
+   * the rift rim and the sun disc (~9) well inside, and pulled the strength
+   * back a little now that fewer but brighter things are blooming. */
   const bloomPass = new UnrealBloomPass(
-    new THREE.Vector2(bufferWidth, bufferHeight), 0.55, 0.62, 0.9,
+    new THREE.Vector2(bufferWidth, bufferHeight), 0.45, 0.62, 1.15,
   );
 
   const taaPass = new TemporalAccumulationPass();
@@ -558,6 +562,109 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
       taaPass.enabled = taaWasEnabled;
       taaPass.reset();
       _hasLastCamera = false;
+    },
+
+    /**
+     * Why is IBL contributing nothing? This distinguishes the remaining
+     * causes in one call, from the current camera. Reachable as
+     * `__brno.render.envDiagnostics()`.
+     *
+     * It renders the scene into the HDR buffer and reads it back, so it
+     * measures what the shading actually produced rather than what the JS
+     * side believes. The `environment = null` leg recompiles every material
+     * (USE_ENVMAP is a define), so expect a stall of a second or two.
+     *
+     * Reading the result:
+     *
+     *  - `intensity0` == `intensity3`  and `envOff` == `baseline`
+     *      IBL contributes nothing at all. Check `bakeProbe` (logged at
+     *      boot): if that is black the bake is at fault, if it is healthy
+     *      the env map is fine but the shading is not sampling it.
+     *
+     *  - `intensity0` == `intensity3` but `envOff` != `baseline`
+     *      IBL *is* working; only the scene.environmentIntensity knob is
+     *      not reaching the shader. three only applies it when
+     *      `material.envMap === null` exactly (WebGLRenderer ~2696), so a
+     *      material carrying its own envMap silently pins the level at its
+     *      own envMapIntensity.
+     *
+     *  - both differ
+     *      IBL and the knob both work, and the darkness is a tuning
+     *      problem, not a wiring one.
+     */
+    envDiagnostics({ size = 24 } = {}) {
+      const census = {
+        materials: 0,
+        standard: 0,
+        ownEnvMap: 0,
+        envMapNull: 0,
+        envMapUndefined: 0,
+        fullyMetallic: 0,
+        envMapIntensity: { min: Infinity, max: -Infinity },
+      };
+      const seen = new Set();
+      scene.traverse((o) => {
+        const mats = Array.isArray(o.material) ? o.material : (o.material ? [o.material] : []);
+        for (const m of mats) {
+          if (!m || seen.has(m)) continue;
+          seen.add(m);
+          census.materials++;
+          if (!m.isMeshStandardMaterial) continue;
+          census.standard++;
+          if (m.envMap === null) census.envMapNull++;
+          else if (m.envMap === undefined) census.envMapUndefined++;
+          else census.ownEnvMap++;
+          if (m.metalness >= 0.999) census.fullyMetallic++;
+          if (m.envMapIntensity !== undefined) {
+            census.envMapIntensity.min = Math.min(census.envMapIntensity.min, m.envMapIntensity);
+            census.envMapIntensity.max = Math.max(census.envMapIntensity.max, m.envMapIntensity);
+          }
+        }
+      });
+
+      // measure the scene render only — no post, so nothing downstream can
+      // mask or rescale what the shading produced
+      const wasRenderToScreen = renderPass.renderToScreen;
+      renderPass.renderToScreen = false;
+      const measure = () => {
+        pinBuffers();
+        renderPass.render(renderer, swapTarget, sceneTarget);
+        return probeRenderTarget(renderer, sceneTarget, { size });
+      };
+
+      const savedEnv = scene.environment;
+      const savedIntensity = scene.environmentIntensity;
+
+      const baseline = measure();
+      scene.environmentIntensity = 0;
+      const intensity0 = measure();
+      scene.environmentIntensity = 3;
+      const intensity3 = measure();
+      scene.environmentIntensity = savedIntensity;
+      scene.environment = null;
+      const envOff = measure();
+      scene.environment = savedEnv;
+      const restored = measure();
+
+      renderPass.renderToScreen = wasRenderToScreen;
+
+      const same = (a, b) => a.ok && b.ok && Math.abs(a.mean - b.mean) < 1e-6;
+      const verdict = same(intensity0, intensity3)
+        ? (same(envOff, baseline)
+          ? 'IBL CONTRIBUTES NOTHING — check bakeProbe, then USE_ENVMAP'
+          : 'IBL WORKS but scene.environmentIntensity is not reaching it (material.envMap !== null?)')
+        : 'IBL and the intensity knob both work — this is a tuning problem';
+
+      return {
+        verdict,
+        census,
+        baseline,
+        intensity0,
+        intensity3,
+        envOff,
+        restored,
+        note: 'means are HDR luminance of a centre patch of the scene buffer, pre-tonemap',
+      };
     },
 
     stats() {

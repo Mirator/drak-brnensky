@@ -56,11 +56,13 @@ const _wd3 = new THREE.Vector3();
 const _ex1 = new THREE.Vector3();
 const _fl1 = new THREE.Vector3();
 const _fl2 = new THREE.Vector3();
-const _br1 = new THREE.Vector3();
-const _br2 = new THREE.Vector3();
 const _c1 = new THREE.Color();
 const _c2 = new THREE.Color();
+const _mat4 = new THREE.Matrix4();
 const UP = { x: 0, y: 1, z: 0 };
+
+/** Per-colour instance cap for pickup crates. */
+const PICKUP_CAP = 24;
 
 const SURFACE_FALLBACK = { id: 'stone', colour: 0x8d8779, hardness: 0.95 };
 
@@ -133,12 +135,18 @@ export class VFX {
 
     /* ---------------- state ---------------- */
     this.pickupAssets = new Map();
+    this.pickupList = [];
+    // Built here, not on first pickup: main.js runs renderer.compile() at the
+    // end of boot, and a material created later would compile mid-fight.
+    this._pickupKit(0x7ddf64);   // health
+    this._pickupKit(0x7de3ff);   // ammo
     this.rifts = [];
     this.dying = [];        // rift meshes mid-collapse
     this.patches = [];        // lingering burning ground
     this.barrelHeat = 0;
     this._ctx = null;
     this._depthIsLive = null;   // set by setLinearDepthTexture()
+    this._hidden = false;      // setVisible(false) for artefact triage
     this._pending = { valid: false, type: '', x: 0, y: 0, z: 0, nx: 0, ny: 1, nz: 0, surface: null };
     this._seed = 0;
 
@@ -1116,42 +1124,138 @@ export class VFX {
     this._wallDust(pos, 14 * scale);
   }
 
-  /* ---------------- pickup beacon ---------------- */
+  /* ---------------- pickup beacon ----------------
+   * Was three draw calls per pickup (a lit box, an additive sprite halo and
+   * an open cylinder for the shaft). Now: the boxes of all pickups sharing a
+   * colour are one InstancedMesh — so two draw calls for the whole game, no
+   * matter how many crates are on the square — and the halo and the light
+   * shaft are re-emitted every frame into the shared additive particle
+   * layer, which costs no draw call at all and picks up the bloom.
+   *
+   * `box` is now a transform carrier rather than a Mesh: main.js writes
+   * `box.rotation` and `group.position` exactly as before, and we read the
+   * resulting world matrix back into the instance each frame. `group` is
+   * still the Object3D main.js adds to and removes from the scene, and
+   * removing it is how we learn the pickup is gone. */
   makePickupVisual(color = 0x7ddf64) {
-    let assets = this.pickupAssets.get(color);
-    if (!assets) {
-      assets = {
-        boxGeometry: new THREE.BoxGeometry(0.42, 0.42, 0.42),
-        boxMaterial: new THREE.MeshStandardMaterial({
-          color, emissive: color, emissiveIntensity: 1.6, roughness: 0.4,
-        }),
-        haloMaterial: new THREE.SpriteMaterial({
-          map: this.glowTex, color, blending: THREE.AdditiveBlending,
-          transparent: true, depthWrite: false, opacity: 0.32,
-        }),
-        beamGeometry: new THREE.CylinderGeometry(0.16, 0.2, 3.4, 8, 1, true),
-        beamMaterial: new THREE.MeshBasicMaterial({
-          color, transparent: true, opacity: 0.07, blending: THREE.AdditiveBlending,
-          depthWrite: false, side: THREE.DoubleSide,
-        }),
-      };
-      this.pickupAssets.set(color, assets);
-    }
-
-    const g = new THREE.Group();
-    const box = new THREE.Mesh(assets.boxGeometry, assets.boxMaterial);
+    const kit = this._pickupKit(color);
+    const group = new THREE.Group();
+    const box = new THREE.Object3D();
     box.position.y = 0.8;
-    box.castShadow = true;
-    g.add(box);
-    // A marker, not a flare: additive sprites this size read as screen artefacts.
-    const halo = new THREE.Sprite(assets.haloMaterial);
-    halo.scale.set(0.95, 0.95, 1);
-    halo.position.y = 0.8;
-    g.add(halo);
-    const beam = new THREE.Mesh(assets.beamGeometry, assets.beamMaterial);
-    beam.position.y = 1.9;
-    g.add(beam);
-    return { group: g, box, halo };
+    group.add(box);
+    const rec = {
+      group, box, kit, colour: color, slot: kit.alloc(), t: this.rng.float(0, 6), acc: 0,
+    };
+    this.pickupList.push(rec);
+    // `halo` was in the old return value; keep a live Object3D there so any
+    // caller that still pokes it cannot crash, but nothing reads it today.
+    return { group, box, halo: new THREE.Object3D() };
+  }
+
+  /** One InstancedMesh (and one material) per pickup colour, pooled. */
+  _pickupKit(colour) {
+    let kit = this.pickupAssets.get(colour);
+    if (kit) return kit;
+    const geometry = new THREE.BoxGeometry(0.42, 0.42, 0.42);
+    const material = new THREE.MeshStandardMaterial({
+      color: colour, emissive: colour, emissiveIntensity: 1.6, roughness: 0.4,
+    });
+    const mesh = new THREE.InstancedMesh(geometry, material, PICKUP_CAP);
+    mesh.count = 0;
+    mesh.castShadow = true;
+    mesh.frustumCulled = false;
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    this.scene.add(mesh);
+    kit = {
+      mesh,
+      geometry,
+      material,
+      used: new Uint8Array(PICKUP_CAP),
+      high: 0,
+      dirty: false,
+      alloc() {
+        for (let i = 0; i < PICKUP_CAP; i++) {
+          if (kit.used[i]) continue;
+          kit.used[i] = 1;
+          if (i + 1 > kit.high) kit.high = i + 1;
+          kit.mesh.count = kit.high;
+          return i;
+        }
+        return -1;   // over the cap: the pickup still works, it just has no crate
+      },
+      free(slot) {
+        if (slot < 0) return;
+        kit.used[slot] = 0;
+        _mat4.makeScale(0, 0, 0);
+        kit.mesh.setMatrixAt(slot, _mat4);
+        kit.dirty = true;
+        while (kit.high > 0 && !kit.used[kit.high - 1]) kit.high--;
+        kit.mesh.count = kit.high;
+      },
+    };
+    this.pickupAssets.set(colour, kit);
+    return kit;
+  }
+
+  /**
+   * Push each live pickup's transform into its instance and re-emit its
+   * marker. main.js owns the lifetime and simply removes the group from the
+   * scene, so a null parent is how a freed pickup is detected — no extra
+   * call needed on their side.
+   */
+  _updatePickups(dt) {
+    if (this.pickupList.length === 0) return;
+    for (let i = this.pickupList.length - 1; i >= 0; i--) {
+      const rec = this.pickupList[i];
+      if (!rec.group.parent) {
+        rec.kit.free(rec.slot);
+        this.pickupList.splice(i, 1);
+        continue;
+      }
+      if (rec.slot >= 0) {
+        rec.box.updateWorldMatrix(true, false);
+        rec.kit.mesh.setMatrixAt(rec.slot, rec.box.matrixWorld);
+        rec.kit.dirty = true;
+      }
+      rec.t += dt;
+      _v1.setFromMatrixPosition(rec.box.matrixWorld);
+      _c1.set(rec.colour);
+
+      // A marker, not a flare: the old halo was a 0.3-opacity sprite and the
+      // shaft a 0.07-opacity cylinder, so keep it at that weight.
+      const s = beginSpawn();
+      s.x = _v1.x; s.y = _v1.y; s.z = _v1.z;
+      s.r = _c1.r * 1.3; s.g = _c1.g * 1.3; s.b = _c1.b * 1.3;
+      s.size = 0.62 + Math.sin(rec.t * 2.4) * 0.06;
+      s.size1 = s.size;
+      s.life = 0.05;
+      s.drag = 30;
+      s.ground = -1e4;
+      s.tile = TILE.GLOW;
+      s.alpha = 0.34;
+      this.embers.spawn(s);
+      // the shaft: one vertically stretched streak, so it leans with the camera
+      s.vy = 7;
+      s.size = 0.26;
+      s.size1 = 0.26;
+      s.life = 0.06;
+      s.stretch = 0.16;
+      s.tile = TILE.STREAK;
+      s.alpha = 0.16;
+      this.embers.spawn(s);
+      // and the occasional mote drifting up out of it, to catch the eye
+      rec.acc += dt * 3.5;
+      while (rec.acc >= 1) {
+        rec.acc -= 1;
+        this.embersOut(_v1.x, _v1.y - 0.3, _v1.z, 1, 0.5, rec.colour,
+          { size: 0.05, life: 1.5, up: 1.1, drag: 0.8, grav: -0.02, ground: -1e4 });
+      }
+    }
+    for (const kit of this.pickupAssets.values()) {
+      if (!kit.dirty) continue;
+      kit.mesh.instanceMatrix.needsUpdate = true;
+      kit.dirty = false;
+    }
   }
 
   /* ================================================================
@@ -1170,7 +1274,7 @@ export class VFX {
 
     this._updateProjectiles(dt, ctx);
     this._updateMuzzle(dt, ctx);
-    this._updateBreath(dt, ctx);
+    this._updatePickups(dt);
     this._updateDying(dt);
     this._updatePatches(dt);
     this._updateLights(dt);
@@ -1183,6 +1287,10 @@ export class VFX {
     this.fireballs.update();
     this.shocks.update();
     this.flames.update();
+
+    // every layer sets its own visibility from its live count above, so a
+    // triage hide has to be re-applied after them
+    if (this._hidden) this.setVisible(false);
 
     // screen-space intensities decay on effect time, like the camera shake
     const k = Math.exp(-dt * 3.4);
@@ -1357,40 +1465,13 @@ export class VFX {
     }
   }
 
-  /**
-   * Drives the flamethrower straight off the boss's state. enemies.js
-   * already exposes `breath`, `facing`, `pos` and `scale`, so the breath
-   * upgrade needed no changes in a file this engineer does not own — but
-   * see the report: an explicit `vfx.flameBreath()` call from enemies.js
-   * would be cleaner and would let it aim properly.
-   */
-  _updateBreath(dt, ctx) {
-    const list = ctx.enemies && ctx.enemies.list;
-    if (!list) return;
-    for (let i = 0; i < list.length; i++) {
-      const e = list[i];
-      if (!(e.breath > 0) || e.hp <= 0) continue;
-      const scale = e.scale ?? 1;
-      const origin = _br1.set(e.pos.x, e.pos.y + 4.6 * scale, e.pos.z);
-      const sweep = Math.sin(e.breath * 5.2) * 0.35;
-      const fx = -Math.sin(e.facing);
-      const fz = -Math.cos(e.facing);
-      const ax = fx * Math.cos(sweep) - fz * Math.sin(sweep);
-      const az = fx * Math.sin(sweep) + fz * Math.cos(sweep);
-      // Aim the jet at the cobbles ~13 m ahead rather than levelling it out:
-      // the damage cone is horizontal and at the player's height, so the fire
-      // has to arrive there too — and a jet that dives, pools and runs along
-      // the ground is the whole point of a flamethrower.
-      const ahead = 13 * Math.max(1, scale * 0.5);
-      const landY = this._groundAt(e.pos.x + ax * ahead, e.pos.z + az * ahead, e.pos.y + 2);
-      const dir = _br2.set(ax * ahead, landY + 0.5 - origin.y, az * ahead).normalize();
-      this.flameBreath(origin, dir, dt, {
-        power: e.phase2 ? 1.25 : 1,
-        range: ahead * 1.8,
-        ground: landY + 0.05,
-      });
-    }
-  }
+  /* The boss breath used to be driven from here, by reading `e.breath` off
+   * ctx.enemies.list — a stopgap so the jet could be rebuilt without editing
+   * a file this engineer does not own. enemies.js now calls flameBreath()
+   * itself from bossBreathTick() with a properly aimed direction, so that
+   * method is gone: its continued existence was what kept their call
+   * suppressed (they test `typeof vfx._updateBreath !== 'function'`).
+   * Do not reintroduce a method by that name. */
 
   _updatePatches(dt) {
     const rng = this.rng;
@@ -1536,7 +1617,37 @@ export class VFX {
     for (let i = this.projectiles.length - 1; i >= 0; i--) this._despawn(this.projectiles[i], i);
   }
 
+  /**
+   * Hide (or show) every mesh this file owns, in one call. Exists for
+   * triage: when a rendering artefact might or might not be VFX, this
+   * answers it in one frame without touching anyone else's code.
+   * `vfx.setVisible(false)` leaves gameplay untouched — projectiles still
+   * fly and hit, they just stop drawing.
+   */
+  setVisible(visible) {
+    for (const l of [this.embers, this.smoke, this.debris, this.haze]) {
+      l.mesh.visible = visible && l.count > 0;
+    }
+    this.tracers.mesh.visible = visible && this.tracers.written > 0;
+    this.decals.mesh.visible = visible && this.decals.count > 0;
+    for (const sys of [this.fireballs, this.shocks, this.flames]) {
+      sys.layer.mesh.visible = visible && sys.pool.count > 0;
+    }
+    for (const r of this.rifts) r.mesh.visible = visible;
+    for (const d of this.dying) d.mesh.visible = visible;
+    for (const kit of this.pickupAssets.values()) kit.mesh.visible = visible;
+    this._hidden = !visible;
+    return this;
+  }
+
   dispose() {
+    for (const kit of this.pickupAssets.values()) {
+      this.scene.remove(kit.mesh);
+      kit.geometry.dispose();
+      kit.material.dispose();
+    }
+    this.pickupAssets.clear();
+    this.pickupList.length = 0;
     this.embers.dispose();
     this.smoke.dispose();
     this.debris.dispose();

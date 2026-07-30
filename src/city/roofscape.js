@@ -84,7 +84,8 @@ export class Roofscape {
       brick.box(cx, baseY + h, cz, cw + 0.16, 0.14, cd + 0.16, rot,
         () => [1.4, 0.4, 0, 0], [false, false, false, false, false, true]);
       if (rng.chance(0.45)) {
-        const pots = N(this.M.metal);
+        // a pot is 0.3 m of sheet metal: detail tier, gone past the LOD radius
+        const pots = D(this.M.metal);
         pots.box(cx, baseY + h + 0.14, cz, cw * 0.42, rng.float(0.24, 0.44), cd * 0.5, rot,
           () => [0.6, 0.6, 0, 0], [false, false, false, false, false, true]);
       }
@@ -114,7 +115,8 @@ export class Roofscape {
         N(this.M.clay).gable(dx, y + dh, dz, dw + 0.24, 1.7, 0.55, drot, 1.4);
         // glazing, slightly recessed into the face
         const fc = Math.cos(drot), fs = Math.sin(drot);
-        N(this.M.glass).quad(
+        // one dormer pane: same reasoning as the chimney pots
+        D(this.M.glass).quad(
           dx + fc * dw * 0.34 - fs * 0.78, y + 0.22, dz - fs * dw * 0.34 - fc * 0.78,
           -fc * dw * 0.68, 0, fs * dw * 0.68,
           0, dh - 0.42, 0, 1, 1,

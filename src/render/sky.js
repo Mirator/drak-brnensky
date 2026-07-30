@@ -35,11 +35,24 @@ export const SUN_DIR = new THREE.Vector3(-0.55, 0.34, -0.76).normalize();
 /* aerial perspective                                                 */
 /* ------------------------------------------------------------------ */
 
+/* Tuned against shots/post-street-masarykova.png and post-petrov-front.png,
+ * the first captures that went through the real stack.
+ *
+ * Both were milky: density 0.0034 put visible haze on cobbles 30 m away, and
+ * sunPower 3.2 is a very wide lobe — `pow(cos, 3.2)` is still ~0.35 at 45°
+ * off-sun, so at strength 0.9 more than half the frame was being dragged
+ * towards the warm tint. That reads as a pink wash over everything rather
+ * than as aerial perspective.
+ *
+ * Now: about half the density, a much tighter sun lobe at lower strength,
+ * and a shorter scale height so the haze sits in the streets and lets the
+ * skyline and Špilberk rise out of it — which is the depth cue the fog is
+ * actually there to provide. */
 export const AERIAL = {
   /** Extinction per metre at `baseY`. */
-  density: 0.0034,
+  density: 0.0018,
   /** Haze scale height: density falls as exp(-falloff * (y - baseY)). */
-  heightFalloff: 1 / 58,
+  heightFalloff: 1 / 34,
   baseY: 0,
   /** Base haze colour (also `scene.fog.color`). */
   color: new THREE.Color(0x2e3242),
@@ -47,9 +60,9 @@ export const AERIAL = {
   sunColor: new THREE.Color(0xffb379),
   /** Haze colour looking up (keeps distant roofs from going brown). */
   upColor: new THREE.Color(0x3b4363),
-  /** How tightly the sun tint hugs the sun direction. */
-  sunPower: 3.2,
-  sunStrength: 0.9,
+  /** How tightly the sun tint hugs the sun direction. Higher = tighter. */
+  sunPower: 7.0,
+  sunStrength: 0.55,
 };
 
 let aerialInstalled = false;
@@ -445,6 +458,15 @@ export function createSky(scene) {
   mesh.frustumCulled = false;
   mesh.name = 'sky';
   scene.add(mesh);
+
+  /* Density and base colour are real uniforms sourced from scene.fog, so
+   * AERIAL cannot drive them by itself — sync them here to keep AERIAL the
+   * single source of truth. (Everything else in AERIAL is baked into the
+   * chunk instead; see buildFogChunks.) */
+  if (scene.fog) {
+    scene.fog.color.copy(AERIAL.color);
+    if (scene.fog.isFogExp2) scene.fog.density = AERIAL.density;
+  }
 
   let t = 0;
   return {

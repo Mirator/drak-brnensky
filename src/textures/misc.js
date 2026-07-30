@@ -115,6 +115,12 @@ export function makeTramLiveryMaterial({ seed = 74, size = tierSize(512) } = {})
 /* ------------------------------------------------------------------ */
 /* bare concrete                                                        */
 /* ------------------------------------------------------------------ */
+/** Formwork seams are drawn every `size / 4` (4 panels per tile edge), and a
+ * standard shuttering panel is ~2.4 m wide, so 4 * 2.4 = 9.6 m per tile.
+ * Secondary/approximate -- concrete is used as a ground material at some
+ * call sites and a wall material at others; this assumes the former. */
+export const CONCRETE_TILE_M = 9.6;
+
 export function makeConcreteMaterial({ seed = 75, size = tierSize(512) } = {}) {
   const rngNoise = new Rng(seed);
   const field = makeFbm(rngNoise, { cells: 6, octaves: 4 });

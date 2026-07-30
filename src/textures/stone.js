@@ -21,6 +21,18 @@ const H_BLOCK = 150;
  * `scale` for a broad rampart vs. a thin buttress) gets a denser texel
  * grid rather than the same blurry 128px tile stretched further.
  */
+/** Real-world metres spanned by ONE repeat of the ashlar texture, i.e. at
+ * `scale = 1`: the draw loop always lays 8 fixed courses across the tile
+ * (`rows = 8`) regardless of `scale` (only the UV repeat count and the
+ * canvas's texel density change with `scale`, not the course count), and a
+ * real Gothic ashlar course runs ~0.30-0.50 m tall -- at the 0.40 m
+ * midpoint, 8 * 0.40 = 3.2 m per tile. `scale` is the repeat count on top of
+ * that: a wall `H` metres tall wants `scale = H / STONE_TILE_M` (see
+ * `groundRepeat()` in materials.js). At today's uncommented `scale: 2` call
+ * sites that's 6.4 m of coverage -- whether that's right for the wall in
+ * question is for the call site's owner to check against `STONE_TILE_M`. */
+export const STONE_TILE_M = 3.2;
+
 export function makeStoneMaterial(base = '#8d8577', mortar = '#6e675c', scale = 1) {
   const S = tierSize(Math.max(256, Math.min(512, Math.round(256 * Math.sqrt(Math.max(1, scale))))));
   const seed = 4242;

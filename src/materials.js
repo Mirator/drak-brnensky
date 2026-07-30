@@ -19,17 +19,20 @@ import {
   paintFacadeBay, facadeBayMaterial,
 } from './textures/facades.js';
 import { makeRoofMaterial, makeSlateCopperMaterial, makeMetalSeamRoofMaterial } from './textures/roofs.js';
-import { makeStoneMaterial } from './textures/stone.js';
+import { makeStoneMaterial, STONE_TILE_M } from './textures/stone.js';
 import {
   makeCobbleMaterial, makeAsphaltMaterial, makeKerbMaterial, makeTactilePavingMaterial,
   makeDrainCoverMaterial, makePavementSlabMaterial, makeGravelMaterial, makeGrassMaterial,
   makePuddleMaterial,
+  SETT_TILE_M, FAN_SETT_TILE_M, KERB_TILE_M, TACTILE_TILE_M, SLAB_TILE_M, GRAVEL_TILE_M,
+  GRASS_TILE_M, ASPHALT_TILE_M, DRAIN_TILE_M,
 } from './textures/ground.js';
 import {
   glassMaterial, makePaneGlassMaterial, makeTramRailMaterial, makePaintedMetalMaterial,
   makeWoodMaterial, makeTramLiveryMaterial, makeConcreteMaterial, makeGraffitiPlasterMaterial,
   makeBronzeMaterial, makeGildedMaterial,
   makeScorchDecal, makeImpactDecal, makeCrackDecal, makeStainDecal, makeScuffDecal,
+  CONCRETE_TILE_M,
 } from './textures/misc.js';
 
 /* ------------------------------------------------------------------ */
@@ -137,6 +140,68 @@ function disposeOne(mat) {
 export function disposeAll() {
   for (const mat of cache.values()) disposeOne(mat);
   cache.clear();
+}
+
+/* ------------------------------------------------------------------ */
+/* real-world tile scale — metres per texture repeat                   */
+/* ------------------------------------------------------------------ */
+/**
+ * Real-world metres represented by ONE repeat of each tiled ground/masonry
+ * material's texture (at `repeat = 1`, or for `stone`, at `scale = 1`).
+ * Each value is derived from the actual grid/module the generator bakes
+ * into its canvas — see the doc comment beside that constant's export in
+ * textures/ground.js, textures/stone.js, or textures/misc.js for the exact
+ * derivation, not a guess. Follows the same "name the real unit" pattern as
+ * `BAY_W` / `FLOOR_H` above, extended to ground and masonry tiles.
+ *
+ * Keyed by the same `name` getMaterial() accepts.
+ */
+export const TILE_METRES = {
+  cobbleRunning: SETT_TILE_M,
+  cobbleTramTrack: SETT_TILE_M,
+  cobbleFan: FAN_SETT_TILE_M,
+  kerb: KERB_TILE_M,
+  tactilePaving: TACTILE_TILE_M,
+  pavementSlab: SLAB_TILE_M,
+  gravel: GRAVEL_TILE_M,
+  grass: GRASS_TILE_M,
+  asphalt: ASPHALT_TILE_M,
+  drainCover: DRAIN_TILE_M,
+  stone: STONE_TILE_M,
+  concrete: CONCRETE_TILE_M,
+};
+
+/**
+ * Correct texture `repeat` for a ground/masonry material given the real
+ * surface size it needs to cover, in metres — size by extent instead of
+ * guessing a repeat count. Assumes the standard convention: the target
+ * mesh's UVs span 0..1 over exactly `widthMetres` x `depthMetres` of world
+ * space (true for a PlaneGeometry/BoxGeometry sized to that footprint with
+ * its default UVs, at this project's 1 unit = 1 metre scale). If a call
+ * site's UVs are set up differently (e.g. pre-scaled, or shared across a
+ * merged multi-surface mesh), scale the result accordingly rather than
+ * assuming this is a drop-in repeat.
+ *
+ * `stone` is the one exception: it has no THREE `repeat` — `makeStoneMaterial`
+ * takes a `scale` option instead (its single UV-repeat knob for both axes,
+ * see textures/stone.js). Pass this helper's `.x` straight through as that
+ * `scale` — `getMaterial('stone', { scale: groundRepeat('stone', wallW, wallH).x, ... })`
+ * — picking whichever of width/height matters more for that wall, typically
+ * height for correct course counting.
+ *
+ * @example
+ * // a 12m x 8m granite-sett square:
+ * const { x, y } = groundRepeat('cobbleRunning', 12, 8); // { x: 6, y: 4 }
+ * mat.map.repeat.set(x, y);
+ * mat.normalMap.repeat.set(x, y);
+ * mat.roughnessMap.repeat.set(x, y); // == metalnessMap == aoMap (shared ORM texture)
+ */
+export function groundRepeat(name, widthMetres, depthMetres) {
+  const tileM = TILE_METRES[name];
+  if (!tileM) {
+    throw new Error(`materials.js: groundRepeat() has no metres-per-tile entry for "${name}" (known: ${Object.keys(TILE_METRES).join(', ')})`);
+  }
+  return { x: widthMetres / tileM, y: depthMetres / tileM };
 }
 
 export { setResolutionTier, getResolutionTier, BAY_W, FLOOR_H, FACADE_STYLES, CZECH_SIGNS };
