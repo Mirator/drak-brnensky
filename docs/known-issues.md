@@ -1,136 +1,195 @@
 # Known issues on `aaa-overhaul`
 
-State as of the end of the first integration pass. `npm test` (51 tests) and
-`npm run build` are green, and the game boots and plays — but the branch is
-**not finished** and must not be merged as-is. What follows is what is actually
-wrong, with the evidence, so nobody has to rediscover it.
+`npm test` (57 tests) and `npm run build` are green and the game boots and plays.
+This file records what is still wrong, and — in the "resolved" section — the
+diagnoses worth keeping, because several of them were misleading in instructive
+ways and the reasoning is more reusable than the fix.
 
-## 1. The post-processing stack resolves to black on most cameras — BLOCKING
+## Still open
 
-**Symptom.** `render.render(dt)` composites to an all-black frame at most camera
-positions. A direct `renderer.render(scene, camera)` of the *identical* view is
-correct.
+### 1. `high` preset is unmeasured against 60 fps
 
-**Evidence.** At the `petrov-front` QA camera (`eye [-104, 30, 262]`, 64×64
-centre sample, threshold > 6):
+Three shadow cascades plus GTAO's normal prepass is real GPU cost and nobody has
+profiled the frame on representative hardware. `medium` is the fallback
+(`__brno.setQuality('medium')` drops AO to half-res-only, DOF and TAA). The
+triangle budget *is* met — 0.88–0.93M for the camera pass plus 3 cascades against
+a 1.2M target, down from 13.3–16.0M — but triangles are not milliseconds.
 
-| path | lit pixels | max channel |
-| --- | --- | --- |
-| `renderer.render(scene, camera)` | 3405 / 4096 | 145 |
-| `render.render(1/60)` (composer) | 0 / 4096 | 3 |
+### 2. Boot generation is 6.1–6.4 s
 
-Of the 20 QA views, **19 come out black through the composer** and only
-`street-masarykova` composites correctly. So it is not intermittent noise — it
-is the normal case, and the one working view is the exception.
+Down from a 7.7 s peak but still well above the ~2.0 s pre-overhaul baseline.
+Facade bays are no longer the bulk (256→128 default cut them from ~2.07 s to
+~0.43 s); what remains is spread across ground materials, the rest of the
+registry, and geometry plus plan painting. A `size` option now exists on the
+expensive generators, so the lever is there if it needs pulling further.
 
-**What has been ruled out, with tests:**
+### 3. Window openings land at 1:1.9–2.0, not 1:1.7
 
-- *Not the fog patch.* Suspected first, because a `MeshBasicMaterial` override
-  rendered black with `scene.fog` set and 221 with `scene.fog = null`
-  (`MeshNormalMaterial` has no fog support, which is why it always rendered).
-  But a later clean run rendered correctly *with* fog enabled, so the fog patch
-  in `render/sky.js` is not the cause of the black frames.
-- *Not the scene, camera or geometry.* `MeshNormalMaterial` override renders
-  (254). The scene renders correctly into a plain `UnsignedByteType` target
-  (max 255, 9837/57600 lit) and into a `HalfFloatType` target (57600/57600
-  non-zero) — i.e. scene-into-render-target works fine.
-- *Not any single pass.* Disabling each of the 11 passes in turn leaves the
-  frame black. Disabling the `RenderPass` itself changes the output, so the
-  chain runs — its input is empty.
-- *Not `requireDepth`.* Black with the flag both set and cleared.
-- *Not target sizing.* All composer buffers, the raw depth texture and the
-  linear depth texture are correctly 1280×720.
-- *Not `renderStill()` alone.* The still path is also black, but so is the live
-  path on the same cameras.
-- *Not quality preset.* `low`, `medium`, `high` and `ultra` are all black
-  (`low` yields 1,1,1, i.e. the clear colour).
+The generator is correct (0.40 × 0.62 of the tile, `BAY_W` 3.1 / `FLOOR_H` 3.4,
+giving 1.24 × 2.11 m at the nominal module). But facades snap to a whole number
+of bays so windows sit symmetrically instead of being sliced at party walls,
+which makes the effective tile 2.67–2.80 m across the 8–14 m plot range and the
+real opening 1.07–1.12 m wide. Still portrait, still inside the dossier's
+1.1–1.4 m range. Asymmetric half-windows at every party wall would be the more
+visible error, so this is a deliberate trade.
 
-**Not yet isolated.** Why one camera composites and nineteen do not. The
-composer chain structure looks correct — exactly one pass has
-`renderToScreen = true` (the final `ShaderPass`), `readBuffer !== writeBuffer`,
-and `needsSwap` flags look right, including `UnrealBloomPass` with
-`needsSwap: false`, which is correct for its additive-onto-readBuffer design.
-Next place to look is buffer swap parity across the depth-less target that
-`postfx.js` substitutes for one of the composer's internal buffers, and the
-GTAO normal/depth prepass.
+### 4. Street-wall yield is low
 
-**Current mitigation, deliberately loud, not silent:**
+2,134 of 2,466 plot attempts are rejected because the road table has corridors as
+little as 6 m apart (Masarykova/Rašínova) whose `FLAG.ROAD` bands overlap, so
+457 of ~1,230 buildings are true street-wall plots and the rest are block
+interiors. Widening the spacing in `ROADS` would raise it substantially but moves
+the tram routes.
 
-- `verifyPostStack()` in `main.js` runs at boot, renders the same view directly
-  and through the stack, compares lit-pixel counts, and sets
-  `window.__brno.postStackOk`. It warns to the console on failure and refuses
-  to reach a verdict when the direct render is itself empty (an inconclusive
-  probe must not claim the stack is healthy — an earlier version of this check
-  passed on a black frame, which is worse than no check at all).
-- `shot()` checks each captured frame and re-renders without the stack if it
-  came out blank, recording `window.__brno.lastShot.fellBack`. `qa-shots.js`
-  returns the list of views that fell back. **Any screenshot in `shots/final-*`
-  other than `street-masarykova` was produced WITHOUT post-processing** — no
-  AO, bloom, god rays, grade, SMAA or sharpening. Do not judge the pipeline's
-  look from them.
+### 5. Smaller things, each self-contained
 
-## 2. `toDataURL` on the WebGL canvas returns black — FIXED
+- **Roof stripe banding** on the spire roofs follows the tile rows, which reads
+  like UV tiling or normal-map scale rather than the (now-fixed) metalness
+  collapse. Worth a look.
+- **`hip()` roofs carry cylinder UVs**, so mansard and pavilion roofs are less
+  correct than gable roofs, which generate metres/3 UVs themselves. Needs
+  `roofSlate`/`roofCopper` entries in `TILE_METRES` first, so the roof tile size
+  becomes a contract rather than the convention `geometry.js` currently hardcodes
+  as `S = 3`.
+- **TAA is live-view only** — it accumulates only when the camera is static, so
+  SMAA carries AA during movement. Deliberate: without motion vectors it could
+  never ghost.
+- **`shadowStagger` and stills.** The far cascade refreshes on alternate frames,
+  so any *new* still-capture path must call `lighting.forceShadowUpdate()` or the
+  far band shows the previous frustum's shadows. `shot()` does; a future path
+  will not get it for free.
+- **Debris does not stack.** Body-vs-body uses bounding spheres, so chunks shove
+  each other apart and settle in a scattered layer. Stable, never jittering, but
+  a 0.4 m cube cannot rest on another.
+- **QA capture size cap.** A capture larger than ~5 MiB of PNG is rejected by the
+  dev `/__shot` endpoint's body cap. Brighter frames compress worse, so a
+  full-resolution sweep can hit it; capture at the live canvas size.
+- **`enemies.onAggro` re-issue interval** is 11–19 s, so a very long fight
+  repeats creature voices on a timer rather than on events.
 
-The context is created without `preserveDrawingBuffer`, so by the time the
-canvas compositing path behind `renderer.domElement.toDataURL()` runs, the
-drawing buffer is gone: it returned a fully black PNG while `gl.readPixels` on
-the very same framebuffer returned the real frame. Every screenshot was black
-for this reason *in addition to* issue 1. `shot()` now reads pixels directly and
-flips the rows (GL's origin is bottom-left). Fixed in `main.js`
-(`readCanvasPng()`).
+## Resolved, with the reasoning worth keeping
 
-## 3. Lighting is far too dark on geometry
+### The post stack composited black on 19 of 20 cameras
 
-See `shots/final-petrov-front.png`: the rebuilt cathedral reads as a near-total
-silhouette. Scene light intensities at boot are hemisphere 0.26, sky fill 0.38,
-bounce 0.17 against a sun of 2.9, so anything not directly sun-lit collapses to
-black. The IBL environment is present (`scene.environment` set,
-`environmentIntensity` 0.9) but is not carrying the shadow side. Note this is
-measured through the *fallback* path, so the grade is not applied — retune only
-after issue 1 is fixed, or the numbers will be wrong twice.
+The fog chunk declared **seven uniforms that nothing ever uploaded**. three builds
+`ShaderLib.<id>.uniforms` by deep-cloning `UniformsLib.fog` at *three's own*
+module-evaluation time, so adding keys to it later — the only point at which we
+could, since three is imported first — reaches exactly zero materials. All seven
+defaulted to 0, making the chunk evaluate `pow(0, 0)`: undefined in GLSL, NaN
+wherever it is computed as `exp2(y · log2(x))`.
 
-## 4. Triangle budget is blown by roughly 10×
+Two things made this hard to find, and both are worth remembering:
 
-`stats()` reports **13.3M–16.0M triangles and 2761–3367 draw calls** in the QA
-sweep, against a stated budget of 1.2M triangles / ~600 draw calls and a
-baseline of 371k / ~500. The city and landmark workstreams were terminated
-mid-task by a session limit, both while explicitly working on exactly this
-(their last messages were about trimming generation cost and triangle count), so
-this number is from unfinished work. The performance workstream never started.
+- **Direct-to-canvas rendering laundered the NaN.** In-material tone mapping runs
+  there and AgX ends in `clamp(0,1)`; render targets use `NoToneMapping`, so raw
+  NaN survived only in the composer. Hence "a direct render looks fine, the
+  composer is black" — and hence the one surviving view was the one whose centre
+  is mostly sky, because the sky dome is `fog: false`.
+- **A NaN buffer reads as 100% non-zero.** An early triage step reported
+  "HalfFloat target: 57600/57600 non-zero" as evidence of health. It was the
+  fingerprint. **Test for finite, not for non-zero** — `Number.isNaN` is the
+  decisive probe.
 
-## 5. Three workstreams are unfinished
+Fixed by baking the values into the chunk as GLSL constants (the sun does not
+move, so they are compile-time constants in fact as well as in principle), which
+leaves no uniform to go missing. `configureAerialPerspective()` still retunes by
+regenerating the chunks and bumping an `AERIAL_REV` define — required, because
+three's program cache is keyed on defines and material params, **not chunk text**,
+so `needsUpdate` alone hands back the stale program.
 
-Terminated by an API session limit, mid-edit, with valid but incomplete code:
+### The scene rendered near-black
 
-- **Landmarks** (`src/landmarks.js`, `src/landmarks/`) — had reported both hills
-  climbable and was moving on to tests/build. `LANDMARK_FOOTPRINTS` needs
-  verifying as the reservation source of truth.
-- **City** (`src/city.js`, `src/city/`) — was trimming generation cost and
-  triangle count. Its determinism claim is unverified.
-- **Enemies** (`src/enemies.js`, `src/creatures/`) — was writing the ragdoll
-  handoff. `enemies.onAggro` is wired in `main.js` for creature voices but
-  nothing calls it yet, so whelps, spitters and golems are still silent.
+Not the IBL wiring, which was correct throughout. The sky dome's Rayleigh term was
+`pow(1 - h, 5.0)`, which is **0.031 at 30° elevation** — so the dome was 97%
+zenith colour and the bright horizon occupied the bottom few degrees. That is a
+ring: it gives rim light and no ambient fill, which is why `hemisphere` and
+`skyFill` were the only dials that appeared to help.
 
-## 6. Unverified integration wiring
+The larger lever was the ground. Integrating the cosine-weighted hemisphere about
+a vertical normal, **49.8% of it lies below the horizon** — half a wall's ambient
+light comes from `uGround`, not the sky. Fixing the dome alone bought only 1.28×
+on a facade.
 
-Wired into `main.js` but never seen working, because the black frames made
-visual confirmation impossible:
+Two measurement traps found on the way: sampling the **PMREM mip atlas** is not a
+spherical average (read ~6× low), and a **centre patch of a horizon cube face**
+points straight at the brightest band (read ~5× high). The probe now averages all
+six whole faces.
 
-- Player ragdoll on death. `applyPlayerRagdoll()` copies `bone.out` world
-  transforms straight into `rig.byName[...]` local `position`/`quaternion` per
-  the physics module's documented API. If the rig is a parented hierarchy this
-  double-transforms; the physics workstream reported verifying it against the
-  real rig, but it has not been seen on screen.
-- Debris rendering (`updateDebrisVisuals()`), including the exclusion of ragdoll
-  bones so corpses do not get boxes drawn over them.
-- Surface-aware footsteps and impacts, reverb zones, the positional audio
-  listener, damage-direction arcs, the objective marker and reload progress.
-- The free-camera QA framings were authored against the old city and may now sit
-  inside new geometry; they need re-aiming.
+### Screenshots were black independently of the above
 
-## 7. A recurring authoring hazard worth a lint rule
+`renderer.domElement.toDataURL()` returns an empty image because the context has
+no `preserveDrawingBuffer`, while `gl.readPixels` on the very same framebuffer
+returns the real frame. `shot()` reads pixels directly and flips the rows.
+
+### `stats()` reported 1 draw call and 12 triangles
+
+`renderer.info` resets at the start of every `render()` call and the composer
+issues one per pass, so with `autoReset` left on the numbers described only the
+final fullscreen quad. Now reset once per frame in `advance()`.
+
+### three r185 ships a stale CSM shader chunk
+
+`CSMShader.js` replaces `lights_fragment_begin` **globally** with a pre-r185 copy,
+degrading every material in the scene whether or not it uses cascades.
+`src/render/lighting.js` re-patches surgically against the pristine chunk and
+falls back to a single texel-snapped light if the anchor ever moves.
+`CSM.setupMaterial()` also assigns `material.onBeforeCompile`, which would clobber
+the material registry's own hook — it chains instead, and re-walks the scene at
+1 Hz behind a WeakSet because materials keep appearing after boot from the lazy
+registry and pooled VFX.
+
+### Texel density was decoupled from world scale
+
+Masonry courses read at 1.5–2 m against a real 0.3–0.5 m, and granite setts at
+~1 m against 0.10 m. Two separate causes: ground materials had no stated
+metres-per-tile so callers guessed, and `BoxGeometry` UVs span 0..1 per face
+**regardless of world size**, so no `scale` parameter could fix masonry. Now
+`TILE_METRES` + `groundRepeat()` give callers a contract, and masonry uses a
+triplanar world-space UV projection applied at merge time — measured 0.400 m
+courses on every masonry mesh. Deriving `scale` per surface at the call site
+would have meant one material, and one draw call, per distinct wall height.
+
+### A 120 m translucent pane crossed the frame
+
+The station platform canopy's glazed strip was built at the canopy's full length
+instead of per bay — six of them, `transparent`, 7 m up, each sorting as one unit.
+Attribution took three rounds: VFX ruled itself out on four independent grounds
+(the object is lit, has periodic modelled detail, crosses the sky, and no combat
+was live), a "shopfront" guess from the opaque view was wrong, and the answer came
+from **measuring the longest triangle edge per mesh keyed by material**. An audit
+then found two more of the same class in the Janáček foyer glazing and basin.
+
+### Materials that were physically wrong
+
+`roofSlate` was at metalness **0.75** — higher than the copper variant it had been
+swapped with — collapsing the diffuse response on every slate roof in the game.
+`tramLivery` was 0.6 for flat painted panels. Both now 0.04. Nine materials were
+also silently falling back to a **constant** roughness of 0.5, flattening the
+worn-patch variation their own comments described. A suspected fully-metallic
+ground was *disproven* by measuring the packed ORM channels directly with a
+software Canvas2D — every ground material writes B = 0 exactly.
+
+### Frame-rate dependence in the character rig
+
+Three separate cases: the lean used a finite-difference acceleration (25% error
+between 30 and 144 Hz), pelvis height was exponentially filtered (which aliases a
+9 Hz bob differently per rate), and the foot's swing landing point was predicted
+once at lift-off (leaving the foot up to 0.2 m behind at 30 Hz). Now 0.89 mm
+difference at the pelvis between 30 and 144 Hz, and 0.000000 m foot slip during
+stance. `onStep` also fired on a 2.1 m distance accumulator, which is
+geometrically impossible for an 0.84 m leg — it now fires on actual contact.
+
+### Physics bugs only running the sim would find
+
+Ragdoll bones sleeping individually let the joint solver push bodies that had
+stopped integrating; Baumgarte bias applied to real velocities made corpses walk
+themselves across the square (fixed with split-impulse pseudo-velocities); and a
+velocity-based sleep test can never fire, because a resting body always carries
+correction velocity — sleep is decided on displacement.
+
+### An authoring hazard that bit twice
 
 A backtick inside a comment inside a `` /* glsl */ `…` `` template literal
 silently terminates the template and turns GLSL into JavaScript. It broke the
 build twice in one session, in two different files, and the error points at the
-wrong line.
+wrong line. There is now a check for it in the render module's invariant harness.
