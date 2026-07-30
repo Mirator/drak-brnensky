@@ -1,6 +1,7 @@
 import {
   HALF, GRID_RES, GN, FLAG, ROADS, PLAZAS, segments, inCore,
 } from './layout.js';
+import { FLOOR_H } from '../materials.js';
 import { frontageOffset } from './plan.js';
 
 /**
@@ -90,7 +91,9 @@ function storeyStack(rng, floors, { commercial }) {
 }
 
 function makeHouse(rng, { eaves, commercial, core, shabbyChance, shopChance }) {
-  const floors = Math.max(2, Math.min(9, Math.round(eaves / (core ? 3.55 : 3.5))));
+  // nominal storey height comes from the facade module, for the same reason
+  // the bay width does: it is the height one bay tile is drawn against
+  const floors = Math.max(2, Math.min(9, Math.round(eaves / FLOOR_H)));
   const stack = storeyStack(rng, floors, { commercial });
   let sum = 0;
   for (const s of stack) sum += s.h;

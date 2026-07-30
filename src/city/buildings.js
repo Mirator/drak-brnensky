@@ -1,4 +1,4 @@
-import { getMaterial } from '../materials.js';
+import { getMaterial, BAY_W, FLOOR_H } from '../materials.js';
 import { Batches, label } from './mesh.js';
 import { TIER } from './chunks.js';
 import { addRotatedBox } from './layout.js';
@@ -25,13 +25,23 @@ import { Shopfronts } from './shopfronts.js';
  * so it can be frustum-culled, and the fine tier distance-culled too.
  */
 
-/** Bay spacing. The painted bay puts its window at 53% of the tile width, so
- * a 2.9 m module is what keeps the window portrait (never square) against
- * the 3.0-3.4 m upper-storey heights. */
-const BAY = 2.9;
-
+/**
+ * Bay module — imported, never restated.
+ *
+ * `BAY_W` / `FLOOR_H` come straight from the module that *draws* the bay
+ * (src/textures/facades.js, via the material registry), because these two
+ * numbers have to agree: the generator lays its window opening at a fixed
+ * fraction of the tile, so the world size of the tile is what decides the
+ * world size of the window. At 3.1 x 3.4 m the plain bay's 0.40 x 0.62
+ * opening resolves to 1.24 x 2.11 m — 1:1.70 portrait, inside the reference
+ * dossier's 1.1-1.4 by 1.8-2.4 m range.
+ *
+ * This used to be a local `BAY = 2.9`, chosen to compensate for a wider
+ * window in the old generator. Two numbers that must match, maintained in
+ * two files, is exactly how that drifts — so the local copy is gone.
+ */
 function baysFor(metres) {
-  return Math.max(1, Math.round(metres / BAY));
+  return Math.max(1, Math.round(metres / BAY_W));
 }
 
 export function buildHouses(group, collision, plots, rng, { breakables, seed, chunks }) {
@@ -105,6 +115,11 @@ export function buildHouses(group, collision, plots, rng, { breakables, seed, ch
       const st = storeys[i];
       const lit = rng.chance(i === 0 ? 0.72 : 0.44);
       const mat = facade(style, st.kind, lit);
+      // U: a whole number of BAY_W bays across each face, so windows land
+      // symmetrically. V: exactly one tile per storey, which is what puts a
+      // different bay archetype on each floor — a 3.0 m attic squeezes the
+      // FLOOR_H = 3.4 m tile and a 4.4 m parter stretches it, both by less
+      // than the storey-height spread the dossier calls for.
       const uv = (face) => (face === 0 || face === 1 ? [bd, 1, 0, 0] : [bw, 1, 0, 0]);
       // party walls and the top/bottom caps are never seen: skipping them
       // halves the wall triangle count and removes coplanar z-fighting
@@ -222,4 +237,4 @@ export function buildHouses(group, collision, plots, rng, { breakables, seed, ch
   };
 }
 
-export { BAY };
+export { BAY_W, FLOOR_H };

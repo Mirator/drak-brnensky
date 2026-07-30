@@ -155,7 +155,8 @@ export function buildEnvironment(renderer, sky, { resolution = 256, intensity = 
   };
   const faceSummary = FACES.map((n, i) => `${n} ${faces[i].ok ? faces[i].mean.toFixed(4) : 'FAIL'}`).join('  ');
   const summary = `sphereMean ${sphereMean.toFixed(4)} | ${faceSummary} | atlas ${fmtProbe(probe.pmremAtlasPatch)}`;
-  if (!probe.pmrem.ok || probe.pmrem.nan > 0 || probe.pmrem.mean < 1e-4) {
+  const atlas = probe.pmremAtlasPatch;
+  if (!atlas.ok || atlas.nan > 0 || atlas.mean < 1e-4) {
     console.error(`[render] IBL bake looks EMPTY or invalid — ${summary}`);
   } else {
     console.info(`[render] IBL bake ok — ${summary}`);
