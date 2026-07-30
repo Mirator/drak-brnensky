@@ -209,6 +209,7 @@ export class CharacterCloth {
     const parent = this.mesh.parent;
     const hasRoot = !!parent;
     if (hasRoot) _root.copy(parent.matrixWorld);
+    this.acc = 0; // drop any pending substeps so a restart starts clean
     for (const q of this.parts) {
       if (q.pin && this._bound) {
         q.p.copy(q.pin.local).applyMatrix4(q.pin.bone.matrixWorld);

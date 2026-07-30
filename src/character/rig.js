@@ -67,6 +67,12 @@ export function buildSkeleton() {
   const rest = {};
   for (const b of bones) rest[b.name] = new THREE.Vector3().setFromMatrixPosition(b.matrixWorld);
 
+  // bind-pose local transforms, so a reset can put every bone back before the
+  // cloth is re-settled (and so a ragdoll can be handed a known start pose)
+  const restLocal = bones.map((b) => ({
+    bone: b, p: b.position.clone(), q: b.quaternion.clone(),
+  }));
+
   const index = {};
   bones.forEach((b, i) => { index[b.name] = i; });
 
@@ -84,7 +90,16 @@ export function buildSkeleton() {
   dims.legLength = dims.thigh + dims.shin;
   dims.armLength = dims.upperArm + dims.lowerArm;
 
-  return { root, bones, byName, index, rest, dims };
+  /** Put every bone back on its bind-pose local transform. */
+  const resetPose = () => {
+    for (const r of restLocal) {
+      r.bone.position.copy(r.p);
+      r.bone.quaternion.copy(r.q);
+      r.bone.scale.set(1, 1, 1);
+    }
+  };
+
+  return { root, bones, byName, index, rest, dims, resetPose };
 }
 
 /* ------------------------------------------------------------------ */

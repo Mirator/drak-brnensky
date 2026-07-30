@@ -519,6 +519,23 @@ function verifyPostStack() {
  * every visual review impossible. `readPixels` is the reliable path; the only
  * cost is flipping the rows, because GL's origin is bottom-left.
  */
+/**
+ * Hand the city's breakable props to the rigid-body world.
+ *
+ * Must be called after boot AND after every `physics.clear()`, because clear()
+ * empties `physics.breakables` — so without re-registering, the first
+ * `startGame()` permanently disarms every bin, bench, stall and kiosk in the
+ * city and `reportImpact()` sees an empty registry forever.
+ *
+ * `buildCity()` also probes `collision.rigid` / `.rigidBody` / `.physics` on its
+ * own, but this file deliberately keeps `physics` as a separate object, so that
+ * probe never finds anything and this call is the only route.
+ */
+function registerCityBreakables() {
+  if (!world || typeof world.registerBreakables !== 'function') return 0;
+  return world.registerBreakables(physics) || 0;
+}
+
 /** Is the frame currently on the canvas essentially empty? Cheap centre sample. */
 function frameIsBlank() {
   const gl = renderer.getContext();
@@ -587,6 +604,7 @@ async function boot() {
 
     await step(20, 'ulice, tramvaje, fasády');
     world = buildCity(scene, collision);
+    registerCityBreakables();
 
     await step(62, 'Petrov, Špilberk, radnice');
     /* The character rig looks materials up through a `.get(name)` shim rather
@@ -818,8 +836,10 @@ function startGame() {
    * go the same way. */
   if (vfx.clearWorldFx) vfx.clearWorldFx();
   physics.clear();
+  /* clear() wipes physics.breakables along with the bodies, so the static prop
+   * registry has to be rebuilt for this run or nothing in the city can break. */
+  registerCityBreakables();
   playerRagdoll = null;
-  player.ragdollControlled = false;
   state.hurtDir = null;
   state.objectivePos = null;
 
@@ -832,6 +852,13 @@ function startGame() {
   player.alive = true;
   player.object.rotation.set(0, Math.PI, 0);
   player.object.scale.setScalar(1);
+  /* Must come AFTER pos and object.rotation above: it plants the feet and
+   * re-settles the coat and scarf against the new spawn, and takes the facing
+   * from object.rotation.y. Called on every start including an alive restart
+   * from the pause menu — that path never dies, so nothing else resets the
+   * rig's transient state (facing, cloth, fireCd/meleeCd/dashCd) and it used to
+   * carry straight into the next run. */
+  player.resetForNewRun();
   chase.yaw = Math.PI;
   chase.pitch = -0.1;
   chase._first = true;
@@ -1210,7 +1237,14 @@ function stepGame(dt, frozen = false) {
     onProjectileHit,
   });
 
-  if (!frozen) physics.step(dt);
+  /* The dynamic world keeps running while dead. `frozen` suppresses gameplay —
+   * AI, waves, input, pickups — but the corpse still has to fall, blend out of
+   * its last animated pose and settle, and debris already in the air still has
+   * to land. Skipping this left the ragdoll receiving exactly one step (the
+   * death frame) and then freezing mid-collapse for the whole game-over
+   * sequence, because the animator also stops posing once `ragdollControlled`
+   * is set. */
+  physics.step(dt);
   applyPlayerRagdoll();
   updateDebrisVisuals();
   updateAudioSpace();

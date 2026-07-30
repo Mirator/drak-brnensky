@@ -5,6 +5,9 @@ import { Rng } from '../src/rng.js';
 import { generatePlots, rotRectHitsRect } from '../src/city/blocks.js';
 import { FALLBACK_FOOTPRINTS, GN } from '../src/city/layout.js';
 import * as landmarksModule from '../src/landmarks.js';
+import * as THREE from 'three';
+import { createBreakables, instanceVisual } from '../src/city/breakables.js';
+import { InstanceSet } from '../src/city/mesh.js';
 
 test('flag grid stores only exact classifications at shape borders', () => {
   const grid = new FlagGrid();
@@ -129,4 +132,128 @@ test('the flag grid is identical across two identical paint sequences', () => {
   const b = paint();
   assert.equal(a.length, b.length);
   assert.equal(a.every((v, i) => v === b[i]), true);
+});
+
+/* ------------------------------------------------------------------ */
+/* breakable props                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Stand-in for PhysicsWorld with just the surface the city touches:
+ * `registerBreakable`, `clear` (which is what throws boot registrations
+ * away) and enough of `breakProp` to fire the descriptor's onBreak.
+ */
+function fakePhysicsWorld() {
+  const world = {
+    breakables: [],
+    registerBreakable(opts) {
+      const prop = { ...opts, broken: false };
+      world.breakables.push(prop);
+      return prop;
+    },
+    clear() {
+      world.breakables.length = 0;
+    },
+    breakProp(prop) {
+      prop.broken = true;
+      if (prop.onBreak) prop.onBreak(prop, []);
+    },
+  };
+  return world;
+}
+
+function threeProps() {
+  return [
+    { colliders: [{}], surface: 'wood', label: 'bench' },
+    { colliders: [{}], surface: 'metal', label: 'litter bin' },
+    { colliders: [{}], surface: 'wood', label: 'kiosk' },
+  ];
+}
+
+test('registration survives the clear() that startGame does', () => {
+  const registry = createBreakables();
+  for (const d of threeProps()) registry.add(d);
+  const world = fakePhysicsWorld();
+
+  assert.equal(registry.register(world), 3);
+  assert.equal(world.breakables.length, 3);
+
+  // an accidental second call is free, which is what the memo is for
+  assert.equal(registry.register(world), 0);
+  assert.equal(world.breakables.length, 3);
+
+  // startGame(): the world drops every registration on the floor
+  world.clear();
+  assert.equal(world.breakables.length, 0);
+
+  // ...and this is the path that puts them back
+  assert.equal(registry.reregister(world), 3);
+  assert.equal(world.breakables.length, 3);
+  assert.equal(registry.register(world, { force: true }), 3);
+  assert.equal(world.breakables.length, 6);
+});
+
+test('registration degrades gracefully with no usable physics world', () => {
+  const registry = createBreakables();
+  registry.add({ colliders: [{}], surface: 'wood', label: 'bench' });
+  assert.equal(registry.register(undefined), 0);
+  assert.equal(registry.register(null), 0);
+  assert.equal(registry.register({}), 0);
+  assert.equal(registry.reregister({ registerBreakable: 'not a function' }), 0);
+  // and still registers for real afterwards
+  assert.equal(registry.register(fakePhysicsWorld()), 1);
+});
+
+test('breaking a prop collapses its instanced visual', () => {
+  const set = new InstanceSet(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+  const indices = [
+    set.push(10, 0, 20),
+    set.push(30, 0, 40),
+    set.push(50, 0, 60),
+  ];
+  assert.deepEqual(indices, [0, 1, 2]);
+  const group = new THREE.Group();
+  const mesh = set.finish(group);
+  assert.equal(mesh.count, 3);
+
+  const scaleOf = (i) => {
+    const m = new THREE.Matrix4();
+    mesh.getMatrixAt(i, m);
+    return new THREE.Vector3().setFromMatrixScale(m).length();
+  };
+  const positionOf = (i) => {
+    const m = new THREE.Matrix4();
+    mesh.getMatrixAt(i, m);
+    return new THREE.Vector3().setFromMatrixPosition(m);
+  };
+  assert.ok(scaleOf(1) > 0);
+
+  const registry = createBreakables();
+  const desc = registry.add({
+    colliders: [{}], surface: 'wood', label: 'bench',
+    ...instanceVisual([[set, indices[1]]]),
+  });
+  const world = fakePhysicsWorld();
+  registry.register(world);
+  world.breakProp(world.breakables[0]);
+
+  // the broken one is gone, its neighbours untouched
+  assert.equal(scaleOf(1), 0);
+  assert.ok(scaleOf(0) > 0);
+  assert.ok(scaleOf(2) > 0);
+  // collapsed in place, so debris and prop agree on where it was
+  assert.deepEqual(
+    [positionOf(1).x, positionOf(1).z],
+    [30, 40],
+  );
+  // and it never comes back on a restart
+  assert.equal(desc.broken, true);
+  assert.equal(registry.intact, 0);
+  world.clear();
+  assert.equal(registry.reregister(world), 0);
+  assert.equal(world.breakables.length, 0);
+
+  // show() puts it back, for whoever wants to restore a fresh city
+  assert.equal(set.show(indices[1]), true);
+  assert.ok(scaleOf(1) > 0);
 });

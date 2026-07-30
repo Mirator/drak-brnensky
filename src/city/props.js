@@ -3,6 +3,7 @@ import { Rng } from '../rng.js';
 import { getMaterial } from '../materials.js';
 import { InstanceSet, partsGeometry, label } from './mesh.js';
 import { TIER } from './chunks.js';
+import { instanceVisual } from './breakables.js';
 import {
   FLAG, ROADS, PLAZAS, PLACES, TRAM_STOPS, segments, offsetPolyline, inCore,
 } from './layout.js';
@@ -210,6 +211,47 @@ function chairGeometry() {
   return partsGeometry(parts);
 }
 
+/* Kiosks and market stalls used to be merged into the chunk buckets, which
+ * gave them no instance identity — so when one broke, the debris flew out of
+ * a kiosk that was still standing. They are a couple of dozen props in total,
+ * so instancing them costs a handful of draw calls and buys the ability to
+ * collapse exactly one of them. Local space: +z is the front. */
+function kioskBodyGeometry() {
+  return partsGeometry([{ geo: new THREE.BoxGeometry(3.1, 2.5, 2.2), y: 1.27 }]);
+}
+
+function kioskRoofGeometry() {
+  return partsGeometry([{ geo: new THREE.BoxGeometry(3.6, 0.16, 2.7), y: 2.6 }]);
+}
+
+function kioskGlassGeometry() {
+  return partsGeometry([{ geo: new THREE.BoxGeometry(2.3, 1.2, 0.06), y: 1.5, z: -1.14 }]);
+}
+
+/** The number plate on the kiosk front, UV-mapped into one atlas cell. */
+function kioskSignGeometry(plates, cell) {
+  const g = new THREE.PlaneGeometry(2.2, 0.36);
+  const [u0, v0] = plates.uv(cell);
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    uv.setXY(i, u0 + uv.getX(i) * plates.su, v0 + uv.getY(i) * plates.sv);
+  }
+  uv.needsUpdate = true;
+  return partsGeometry([{ geo: g, y: 2.28, z: -1.17, ry: Math.PI }]);
+}
+
+function stallWoodGeometry() {
+  return partsGeometry([
+    { geo: new THREE.BoxGeometry(2.4, 0.86, 1.1), y: 0.45 },
+    { geo: new THREE.BoxGeometry(0.08, 1.25, 0.08), x: -1.1, y: 1.49 },
+    { geo: new THREE.BoxGeometry(0.08, 1.25, 0.08), x: 1.1, y: 1.49 },
+  ]);
+}
+
+function stallCanopyGeometry() {
+  return partsGeometry([{ geo: new THREE.BoxGeometry(2.7, 0.1, 1.5), y: 2.15 }]);
+}
+
 function mastGeometry() {
   return partsGeometry([
     { geo: new THREE.CylinderGeometry(0.11, 0.17, 7.2, 8), y: 3.6 },
@@ -332,6 +374,12 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
     torso: new InstanceSet(torsoGeometry(), M.coat, { colour: true }),
     head: new InstanceSet(headGeometry(), M.skin, { colour: true }),
     leg: new InstanceSet(legGeometry(), M.trouser, { castShadow: false }),
+    kioskBody: new InstanceSet(kioskBodyGeometry(), M.wood),
+    kioskRoof: new InstanceSet(kioskRoofGeometry(), M.steel),
+    kioskGlass: new InstanceSet(kioskGlassGeometry(), M.glass, { castShadow: false }),
+    kioskSign: new InstanceSet(kioskSignGeometry(plates, plates.numberCell(0)), M.plate, { castShadow: false }),
+    stallWood: new InstanceSet(stallWoodGeometry(), M.wood),
+    stallCanopy: new InstanceSet(stallCanopyGeometry(), M.canvasCloth),
   };
 
   let lamps = 0;
@@ -375,21 +423,23 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
         const z = seg.az + seg.tz * t + seg.nz * off * side;
         if (!clear(x, z, 0.6)) continue;
         const rot = seg.rot + rng.float(-0.3, 0.3);
-        sets.bin.push(x, 0.11, z, rot);
+        const binIndex = sets.bin.push(x, 0.11, z, rot);
         bins++;
         const box = collision.add(x, z, 0.62, 0.62, 0, 1.1, 'prop', 'metal');
         breakables.add({
           colliders: [box], chunks: 5, threshold: 24, mass: 14, surface: 'metal',
           seed: 0x81a2 ^ Math.round(x * 41 + z * 13), label: 'litter bin',
+          ...instanceVisual([[sets.bin, binIndex]]),
         });
         if (rng.chance(0.22)) {
           const nx = x + seg.tx * 1.5, nz = z + seg.tz * 1.5;
           if (clear(nx, nz, 0.5)) {
-            sets.news.push(nx, 0.11, nz, rot);
+            const newsIndex = sets.news.push(nx, 0.11, nz, rot);
             const nb = collision.add(nx, nz, 0.6, 0.5, 0, 0.95, 'prop', 'metal');
             breakables.add({
               colliders: [nb], chunks: 4, threshold: 20, mass: 11, surface: 'metal',
               seed: 0x9b41 ^ Math.round(nx * 29 + nz * 19), label: 'newspaper box',
+              ...instanceVisual([[sets.news, newsIndex]]),
             });
           }
         }
@@ -495,13 +545,14 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       const z = cz + rng.float(-d / 2 + 3, d / 2 - 3);
       if (!clear(x, z, 1.4)) continue;
       const rot = rng.chance(0.5) ? rng.float(-0.2, 0.2) : Math.PI / 2 + rng.float(-0.2, 0.2);
-      sets.bench.push(x, park ? 0 : 0.02, z, rot);
+      const benchIndex = sets.bench.push(x, park ? 0 : 0.02, z, rot);
       const box = collision.add(x, z,
         Math.abs(Math.cos(rot)) * 2.2 + 0.6, Math.abs(Math.sin(rot)) * 2.2 + 0.6,
         0, 0.95, 'prop', 'wood');
       breakables.add({
         colliders: [box], chunks: 6, threshold: 32, mass: 26, surface: 'wood',
         seed: 0x33c1 ^ Math.round(x * 53 + z * 7), label: 'bench',
+        ...instanceVisual([[sets.bench, benchIndex]]),
       });
     }
     if (park) {
@@ -519,11 +570,12 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       const x = cx + (edge === 0 ? -w / 2 + 2.2 : edge === 1 ? w / 2 - 2.2 : rng.float(-w / 2 + 3, w / 2 - 3));
       const z = cz + (edge === 2 ? -d / 2 + 2.2 : edge === 3 ? d / 2 - 2.2 : rng.float(-d / 2 + 3, d / 2 - 3));
       if (!clear(x, z, 1)) continue;
-      sets.planter.push(x, 0.02, z, rng.float(0, 3.1));
+      const planterIndex = sets.planter.push(x, 0.02, z, rng.float(0, 3.1));
       const box = collision.add(x, z, 1.2, 1.2, 0, 0.75, 'prop', 'stone');
       breakables.add({
         colliders: [box], chunks: 7, threshold: 70, mass: 120, surface: 'stone',
         seed: 0x71d4 ^ Math.round(x * 17 + z * 61), label: 'planter',
+        ...instanceVisual([[sets.planter, planterIndex]]),
       });
     }
     // café terraces spilling onto the square
@@ -532,18 +584,23 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       const x = cx + rng.float(-w / 2 + 4, w / 2 - 4);
       const z = cz + rng.float(-d / 2 + 4, d / 2 - 4);
       if (!clear(x, z, 1.6)) continue;
-      sets.table.push(x, 0.02, z, rng.float(0, 3.1));
+      const tableIndex = sets.table.push(x, 0.02, z, rng.float(0, 3.1));
       tables++;
+      const handles = [[sets.table, tableIndex]];
       const chairs = rng.int(2, 4);
       for (let k = 0; k < chairs; k++) {
         const a = (k / chairs) * Math.PI * 2 + rng.float(-0.3, 0.3);
-        sets.chair.push(x + Math.cos(a) * 0.72, 0.02, z + Math.sin(a) * 0.72,
-          -a + Math.PI / 2 + rng.float(-0.2, 0.2));
+        // the chairs belong to the table: scatter the whole setting at once
+        handles.push([sets.chair, sets.chair.push(
+          x + Math.cos(a) * 0.72, 0.02, z + Math.sin(a) * 0.72,
+          -a + Math.PI / 2 + rng.float(-0.2, 0.2),
+        )]);
       }
       const box = collision.add(x, z, 0.9, 0.9, 0, 0.8, 'prop', 'metal');
       breakables.add({
         colliders: [box], chunks: 4, threshold: 14, mass: 9, surface: 'metal',
         seed: 0xc0fe ^ Math.round(x * 23 + z * 37), label: 'café table',
+        ...instanceVisual(handles),
       });
     }
     // a kiosk or two, and market stalls on the smaller squares
@@ -554,20 +611,19 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       if (clear(x, z, 2.2)) {
         const rot = rng.float(0, Math.PI);
         const c = Math.cos(rot), s = Math.sin(rot);
-        S(M.wood, x, z).box(x, 0.02, z, 3.1, 2.5, 2.2, rot,
-          (f) => [(f === 0 || f === 1 ? 2.2 : 3.1) / 0.8, 2.5 / 0.8, 0, 0]);
-        D(M.steel, x, z).box(x, 2.52, z, 3.6, 0.16, 2.7, rot, () => [4, 0.4, 0, 0]);
-        D(M.glass, x, z).box(x - s * 1.14, 0.9, z - c * 1.14, 2.3, 1.2, 0.06, rot, () => [1.6, 1, 0, 0]);
-        const ki = plates.numberCell(kiosks * 5);
-        const [ku, kv] = plates.uv(ki);
-        D(M.plate, x, z).quad(x + c * 1.1 - s * 1.17, 2.1, z - s * 1.1 - c * 1.17,
-          -c * 2.2, 0, s * 2.2, 0, 0.36, 0, plates.su, plates.sv, ku, kv);
+        const kioskHandles = [
+          [sets.kioskBody, sets.kioskBody.push(x, 0.02, z, rot)],
+          [sets.kioskRoof, sets.kioskRoof.push(x, 0.02, z, rot)],
+          [sets.kioskGlass, sets.kioskGlass.push(x, 0.02, z, rot)],
+          [sets.kioskSign, sets.kioskSign.push(x, 0.02, z, rot)],
+        ];
         const boxes = [collision.add(x, z,
           Math.abs(c) * 3.1 + Math.abs(s) * 2.2, Math.abs(s) * 3.1 + Math.abs(c) * 2.2,
           0, 2.7, 'prop', 'wood')];
         breakables.add({
           colliders: boxes, chunks: 9, threshold: 90, mass: 180, surface: 'wood',
           seed: 0x5ee7 ^ Math.round(x * 11 + z * 71), label: 'kiosk',
+          ...instanceVisual(kioskHandles),
         });
         kiosks++;
         if (kiosks % 2 === 0) break;
@@ -581,18 +637,17 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
         if (!clear(x, z, 2)) continue;
         const rot = rng.chance(0.5) ? 0 : Math.PI / 2;
         const c = Math.cos(rot), s = Math.sin(rot);
-        S(M.wood, x, z).box(x, 0.02, z, 2.4, 0.86, 1.1, rot, () => [3, 1, 0, 0]);
-        for (const sgn of [-1, 1]) {
-          D(M.wood, x, z).box(x + c * sgn * 1.1, 0.86, z - s * sgn * 1.1, 0.08, 1.25, 0.08, rot,
-            () => [0.3, 2, 0, 0]);
-        }
-        S(M.canvasCloth, x, z).box(x, 2.1, z, 2.7, 0.1, 1.5, rot, () => [3.4, 0.3, 0, 0]);
+        const stallHandles = [
+          [sets.stallWood, sets.stallWood.push(x, 0.02, z, rot)],
+          [sets.stallCanopy, sets.stallCanopy.push(x, 0.02, z, rot)],
+        ];
         const boxes = [collision.add(x, z,
           Math.abs(c) * 2.4 + Math.abs(s) * 1.1, Math.abs(s) * 2.4 + Math.abs(c) * 1.1,
           0, 1, 'stall', 'wood')];
         breakables.add({
           colliders: boxes, chunks: 8, threshold: 26, mass: 40, surface: 'wood',
           seed: 0x2b8d ^ Math.round(x * 43 + z * 5), label: 'market stall',
+          ...instanceVisual(stallHandles),
         });
         stalls++;
       }

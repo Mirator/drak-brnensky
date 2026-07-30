@@ -8,14 +8,47 @@
  * something with a compatible API is offered. If no rigid-body world ever
  * appears, the props are simply static colliders, and every collider still
  * carries an explicit surface name for the audio and VFX engineers.
+ *
+ * Two things this has to survive:
+ *
+ *  - **Restarts.** `PhysicsWorld.clear()` empties its own `breakables` list,
+ *    so every registration made at boot is thrown away the first time
+ *    `startGame()` runs. `register()` keeps a memo so an accidental double
+ *    call is free, but the memo has to be defeatable — hence
+ *    `register(world, { force: true })` and its alias `reregister(world)`.
+ *    Call it straight after `clear()` and the whole city is breakable again.
+ *  - **Props that are already debris.** Re-registering a bench that has
+ *    already been smashed would let it shed a second set of chunks out of
+ *    thin air, so a descriptor whose prop has broken is skipped from then on.
  */
+
+/**
+ * Build the visual half of a descriptor: which instanced meshes to collapse
+ * when the prop breaks.
+ *
+ * `handles` is a list of `[instanceSet, index]` pairs — a prop assembled from
+ * several materials (a kiosk is body, roof, glazing and sign) gets one pair
+ * per material. Collapsing writes a zero-scale matrix, so no buffer is
+ * rebuilt and nothing is left standing where the debris came from.
+ */
+export function instanceVisual(handles) {
+  return {
+    userData: { instances: handles },
+    onBreak() {
+      for (const [set, index] of handles) {
+        if (set && typeof set.hide === 'function') set.hide(index);
+      }
+    },
+  };
+}
+
 export function createBreakables() {
   const pending = [];
   let registered = null;
 
   const looksUsable = (w) => !!w && typeof w.registerBreakable === 'function';
 
-  return {
+  const api = {
     /** Descriptor shape matches PhysicsWorld.registerBreakable(opts). */
     add(desc) {
       pending.push(desc);
@@ -30,6 +63,13 @@ export function createBreakables() {
       return pending.length;
     },
 
+    /** How many are still intact, i.e. how many a re-registration passes on. */
+    get intact() {
+      let n = 0;
+      for (const d of pending) if (!d.broken) n++;
+      return n;
+    },
+
     /** Group the pending descriptors by label, for the build report. */
     summary() {
       const out = {};
@@ -41,19 +81,31 @@ export function createBreakables() {
     },
 
     /**
-     * Hand every collected prop to a rigid-body world. Safe to call with
+     * Hand every intact prop to a rigid-body world. Safe to call with
      * `undefined`, with an object that has no such API, or twice.
-     * Returns the number actually registered.
+     *
+     * @param {object} world  a PhysicsWorld-like object
+     * @param {{force?: boolean}} opts  `force` defeats the already-registered
+     *   memo, which is what a restart needs once `world.clear()` has emptied
+     *   the world's own registry.
+     * @returns {number} how many were registered
      */
-    register(world) {
+    register(world, { force = false } = {}) {
       if (!looksUsable(world)) return 0;
-      if (registered === world) return 0;
+      if (registered === world && !force) return 0;
       registered = world;
       let n = 0;
       for (const desc of pending) {
+        if (desc.broken) continue;
         try {
-          const { label, ...opts } = desc;
+          const { label, onBreak, ...opts } = desc;
           void label;
+          /* Mark the descriptor broken whatever else the prop's own onBreak
+           * does, so a later re-registration cannot resurrect it. */
+          opts.onBreak = (prop, bodies) => {
+            desc.broken = true;
+            if (onBreak) onBreak(prop, bodies);
+          };
           if (!opts.colliders || opts.colliders.length) {
             world.registerBreakable(opts);
             n++;
@@ -64,5 +116,16 @@ export function createBreakables() {
       }
       return n;
     },
+
+    /**
+     * Re-register after a world has been cleared — exactly
+     * `register(world, { force: true })`. Call it straight after
+     * `PhysicsWorld.clear()`.
+     */
+    reregister(world) {
+      return api.register(world, { force: true });
+    },
   };
+
+  return api;
 }

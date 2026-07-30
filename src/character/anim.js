@@ -151,15 +151,23 @@ export class CharacterAnimator {
       f.stance = true;
       f.pitch = 0;
       f.lift = 0;
+      f.load = 1;
       f.yaw = facing + f.side * 0.075;
+      f.ankle.set(f.pos.x, f.pos.y + this.dims.ankleY, f.pos.z);
     }
     this.gait = 0;
     this._initFeet = true;
   }
 
-  /** Full state reset — used on respawn, never on a landing. */
+  /**
+   * Full state reset. Used for a new run and for a respawn — never on a
+   * landing. The caller must have the rig on its bind pose and the object's
+   * world matrices already updated at the new position, because the cloth
+   * re-settles against the bone world matrices.
+   */
   reset(pos, facing) {
     this.resetStance(pos, facing);
+    this.stepEvents.length = 0;
     this.deadT = 0;
     this.deathTilt = 0;
     this.rise.x = this.rise.v = 0;
@@ -169,15 +177,36 @@ export class CharacterAnimator {
     this.leanS.x = this.leanS.v = 0;
     this.bankS.x = this.bankS.v = 0;
     this.flinch = 0;
+    this.flinchX = 0;
+    this.flinchZ = 0;
     this.stagger = 0;
     this.speedS = this.runS = this.fwdS = this.strafeS = 0;
+    this.speed = 0;
+    this.stepLen = 0.7;
     this.accS.set(0, 0, 0);
     this.standBlend = 1;
     this.airBlend = 0;
     this.aimYaw = this.aimPitch = 0;
     this.headYaw = this.headPitch = 0;
+    this.hipYaw = 0;
     this.pelvisLocalY = this.dims.hipY + 0.02;
+    this.pelvisSway = 0;
+    this.leftHand.set(0, 0, 0);
+    this.leftHandWorld.set(0, 0, 0);
     this.leftHandInit = false;
+    this.B.head.position.copy(this.restHead);
+    this.B.neck.position.copy(this.restNeck);
+
+    // weapon back to a seated magazine and no recoil offset
+    const W = this.weapon;
+    if (W) {
+      W.recoil.position.set(0, 0, 0);
+      W.recoil.quaternion.identity();
+      W.magHome.position.set(0, -0.112, 0.028);
+      W.magHome.rotation.set(0.06, 0, 0);
+      W.mag.scale.setScalar(1);
+    }
+
     if (this.cloth) this.cloth.reset();
   }
 

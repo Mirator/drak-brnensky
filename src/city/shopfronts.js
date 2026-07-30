@@ -355,11 +355,12 @@ export class Shopfronts {
             bsu, bsv, bu, bv,
           );
         }
-        const boards = [collision.add(bx, bz, 0.7, 0.55, 0, 0.9, 'prop', 'wood')];
-        this.breakables.add({
-          colliders: boards, chunks: 4, threshold: 18, mass: 8, surface: 'wood',
-          seed: 0x4a11 ^ Math.round(bx * 31 + bz * 17), label: 'a-board',
-        });
+        /* Deliberately *not* registered as breakable: an A-board is two
+         * quads merged into the shared sign atlas, so it has no instance to
+         * collapse, and a prop that sheds debris while still standing there
+         * is worse than a prop that simply does not break. It keeps its
+         * collider and its `wood` surface for footsteps and impact decals. */
+        collision.add(bx, bz, 0.7, 0.55, 0, 0.9, 'prop', 'wood');
       }
 
       /* the frame is solid, and the glass is what the player will shoot */

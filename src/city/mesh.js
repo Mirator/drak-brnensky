@@ -220,16 +220,59 @@ export class InstanceSet {
     this.colours = colour ? [] : null;
     this.castShadow = castShadow;
     this.receiveShadow = receiveShadow;
+    /** instances pushed so far; survives `finish()` clearing `rows` */
+    this.pushed = 0;
+    /** the built InstancedMesh, so a prop can address its own instance */
+    this.mesh = null;
+    /** index -> original matrix, only for instances that have been hidden */
+    this.saved = null;
   }
 
   /** position + Y rotation + non-uniform scale. */
   push(x, y, z, rot = 0, sx = 1, sy = sx, sz = sx, colour = null) {
     this.rows.push(x, y, z, rot, sx, sy, sz);
     if (this.colours) this.colours.push(colour === null ? 0xffffff : colour);
+    this.pushed++;
+    return this.pushed - 1;
   }
 
   get count() {
-    return this.rows.length / 7;
+    return this.rows.length ? this.rows.length / 7 : this.pushed;
+  }
+
+  /**
+   * Collapse one instance to nothing, in place.
+   *
+   * This is how a breakable prop stops being visible the moment it becomes
+   * debris: a zero-scale matrix leaves zero-area triangles, which are never
+   * rasterised, and it touches sixteen floats rather than rebuilding the
+   * instance buffer. The original matrix is kept so `show()` can put it back.
+   */
+  hide(index) {
+    const mesh = this.mesh;
+    if (!mesh || index < 0 || index >= mesh.count) return false;
+    if (!this.saved) this.saved = new Map();
+    if (!this.saved.has(index)) {
+      const keep = new THREE.Matrix4();
+      mesh.getMatrixAt(index, keep);
+      this.saved.set(index, keep);
+    }
+    const original = this.saved.get(index).elements;
+    _m4.makeScale(0, 0, 0);
+    _m4.setPosition(original[12], original[13], original[14]);
+    mesh.setMatrixAt(index, _m4);
+    mesh.instanceMatrix.needsUpdate = true;
+    return true;
+  }
+
+  /** Put a hidden instance back. Used when a run restarts. */
+  show(index) {
+    const mesh = this.mesh;
+    if (!mesh || !this.saved || !this.saved.has(index)) return false;
+    mesh.setMatrixAt(index, this.saved.get(index));
+    mesh.instanceMatrix.needsUpdate = true;
+    this.saved.delete(index);
+    return true;
   }
 
   finish(group) {
@@ -263,6 +306,7 @@ export class InstanceSet {
     mesh.name = `inst:${this.material.name || this.material.type}`;
     group.add(mesh);
     this.rows.length = 0;
+    this.mesh = mesh;
     return mesh;
   }
 }

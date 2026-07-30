@@ -185,6 +185,7 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
     drawCalls: meshCount,
     colliders: collision.boxes.length,
     breakables: breakables.count,
+    breakablesIntact: breakables.intact,
     breakableKinds: breakables.summary(),
     props: props.counts,
     generationMs: typeof performance !== 'undefined' ? Math.round(performance.now() - t0) : 0,
@@ -203,12 +204,24 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
     reserved,
     stats,
     /**
-     * Register every breakable prop with a rigid-body world. Safe to call
-     * with nothing, or with an object that has no such API — see
+     * Register every intact breakable prop with a rigid-body world. Safe to
+     * call with nothing, or with an object that has no such API — see
      * src/city/breakables.js. Returns how many were registered.
      */
-    registerBreakables(rigidWorld) {
-      return breakables.register(rigidWorld);
+    registerBreakables(rigidWorld, opts) {
+      return breakables.register(rigidWorld, opts);
+    },
+    /**
+     * Re-register after a rigid-body world has been cleared.
+     *
+     * `PhysicsWorld.clear()` empties its own breakables list, so the
+     * registration made at boot is thrown away the first time `startGame()`
+     * runs and nothing in the city could ever break again. Call this
+     * immediately after `physics.clear()`. Props that are already debris are
+     * skipped, so a restart cannot resurrect them.
+     */
+    reregisterBreakables(rigidWorld) {
+      return breakables.reregister(rigidWorld);
     },
     breakablesRegisteredAtBuild: registeredNow,
     /** A random walkable point near (x,z) — used for enemy spawning. */

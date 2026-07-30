@@ -153,10 +153,7 @@ export class Player {
       object: this.object,
       sprintSpeed: SPRINT,
     });
-    this.object.position.copy(this.pos);
-    this.object.rotation.y = this.facing;
-    this.object.updateMatrixWorld(true);
-    this.anim.reset(this.pos, this.facing);
+    this.object.rotation.set(0, this.facing, 0);
 
     // muzzle light — one dynamic light is affordable and sells every shot
     this.muzzleLight = new THREE.PointLight(0x7fe4ff, 0, 16, 2);
@@ -201,6 +198,10 @@ export class Player {
       wishZ: 0,
       ragdoll: false,
     };
+
+    // Spawn through exactly the same path a restart takes, so construction
+    // and startGame() cannot drift apart.
+    this.resetForNewRun();
   }
 
   /** Fallback driver for the death collapse. See the constructor. */
@@ -273,27 +274,90 @@ export class Player {
     return true;
   }
 
-  /** Puts the rig back into a clean spawn state after a restart. */
-  respawn() {
+  /**
+   * Full reset of every transient field the controller, the rig, the animator
+   * and the cloth carry between runs. Zero arguments, safe to call at any
+   * time — alive, dead, or twice in a row — and safe to call unconditionally
+   * from startGame().
+   *
+   * ORDER MATTERS: call this *after* setting `player.pos` and
+   * `player.object.rotation`. It reads `pos` to plant the feet and re-settle
+   * the verlet chains against the new position, and takes the new facing from
+   * `object.rotation.y`, so calling it first would settle the coat at the old
+   * spawn point.
+   */
+  resetForNewRun() {
+    /* ---- transient combat timers ---- */
+    this.fireCd = 0;
+    this.meleeCd = 0;
+    this.meleeAnim = 0;
+    this.dashCd = 0;
+    this.dashTime = 0;
+    this.invuln = 0;
+    this.recoil = 0;
+    this.hurtFlash = 0;
+    this.aimBlend = 0;
+    this.reloading = 0;
+    this._reloadSfx = false;
+    this._landImpact = 0;
+
+    /* ---- locomotion ---- */
     this.object.rotation.x = 0;
     this.object.rotation.z = 0;
     this.facing = this.object.rotation.y;
     this.facingVel = 0;
     this.turnRate = 0;
-    this.aimBlend = 0;
-    this.recoil = 0;
-    this.hurtFlash = 0;
-    this.meleeAnim = 0;
-    this.dashTime = 0;
-    this.invuln = 0;
     this.onGround = true;
-    this._landImpact = 0;
+    this.groundY = this.pos.y;
+    this.animPhase = 0;
+    this.speedRatio = 0;
+    this.time = 0;
+
+    /* ---- ragdoll bookkeeping: hand control back to the animator ---- */
+    this.ragdollControlled = false;
+    this._updateDrivesDeath = false;
+    this._deathFrame = -1;
+    this._deathClock = 0;
+    // if we are being reset while still dead, keep the state machine honest
+    // so update() does not immediately reset a second time
+    this._wasAlive = this.alive;
+
+    /* ---- rig, animator, cloth ---- */
+    // bind pose first, then place the object, then let the cloth settle: the
+    // verlet chains anchor off bone world matrices, so both have to be right
+    // before reset() runs or the coat swings in from wherever it was.
+    this.rig.resetPose();
     this.object.position.copy(this.pos);
+    this.object.scale.set(1, 1, 1);
     this.object.updateMatrixWorld(true);
     this.anim.reset(this.pos, this.facing);
-    this._wasAlive = true;
-    this._updateDrivesDeath = false;
-    this._deathClock = 0;
+    this.object.updateMatrixWorld(true);
+
+    /* ---- visuals that latch ---- */
+    this.muzzleLight.intensity = 0;
+    for (const m of [this.materials.body, this.materials.cloth]) {
+      if (!m || !m.emissive) continue;
+      m.emissive.setRGB(0, 0, 0);
+      m.emissiveIntensity = 0;
+    }
+
+    /* ---- the snapshot handed to the animator ---- */
+    const st = this._animState;
+    st.facing = this.facing;
+    st.turnRate = 0;
+    st.onGround = true;
+    st.aimBlend = 0;
+    st.camPitch = 0;
+    st.ammoFrac = this.ammo / WEAPON.mag;
+    st.reloadT = -1;
+    st.meleeT = -1;
+    st.landImpact = 0;
+    st.alive = this.alive;
+    st.ragdoll = false;
+    st.time = 0;
+    st.groundY = this.pos.y;
+    st.wishX = 0;
+    st.wishZ = 0;
   }
 
   /**
@@ -320,7 +384,9 @@ export class Player {
       this.anim.update(dt, this._animState);
       return;
     }
-    if (!this._wasAlive) this.respawn();
+    // revived without a startGame() (or main.js flipped `alive` directly):
+    // fall back to the same full reset rather than carrying the death pose in
+    if (!this._wasAlive) this.resetForNewRun();
 
     this.invuln = Math.max(0, this.invuln - dt);
     this.fireCd = Math.max(0, this.fireCd - dt);
