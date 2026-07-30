@@ -11,43 +11,37 @@
 
   <!-- ============ HUD ============ -->
   <div id="hud" class="hidden">
-    <div class="hud-top-left">
-      <div class="bar-group">
-        <div class="bar-label">ZDRAVÍ</div>
-        <div class="bar"><div class="bar-fill hp" id="hp-fill"></div></div>
-      </div>
-      <div class="bar-group">
-        <div class="bar-label">VÝDRŽ</div>
-        <div class="bar thin"><div class="bar-fill st" id="st-fill"></div></div>
-      </div>
+    <canvas id="hud-fx"></canvas>
+
+    <div class="vital vital-health" id="vital-health">
+      <span class="vital-num" id="hp-num">100</span>
     </div>
 
     <div class="hud-top-right">
-      <div class="stat"><span class="k">SKÓRE</span><span class="v" id="score">0</span></div>
-      <div class="stat"><span class="k">VLNA</span><span class="v" id="wave">1</span></div>
-      <div class="stat"><span class="k">DRACI</span><span class="v" id="enemies">0</span></div>
+      <div class="stat"><span class="v" id="score">0</span><span class="k">skóre</span></div>
+      <div class="stat"><span class="v" id="wave">1</span><span class="k">vlna</span></div>
+      <div class="stat"><span class="v" id="enemies">0</span><span class="k">draci</span></div>
     </div>
 
     <div class="hud-objective" id="objective">
-      <div class="obj-title">ÚKOL</div>
+      <div class="obj-title">Cíl</div>
       <div class="obj-text" id="objective-text">Najdi ohnisko</div>
       <div class="obj-dist" id="objective-dist">—</div>
     </div>
 
     <div id="compass"><div id="compass-strip"></div><div id="compass-needle"></div></div>
 
-    <div class="hud-bottom-right">
-      <div id="ammo"><span id="ammo-cur">12</span><span class="ammo-sep">/</span><span id="ammo-max">12</span></div>
-      <div id="weapon-name">PLAZMOVÝ VRHAČ</div>
+    <div class="hud-ammo" id="ammo-widget">
+      <div class="ammo-cell" id="ammo-cell"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="ammo-readout">
+        <span id="ammo-cur">12</span><span class="ammo-reserve">/<span id="ammo-max">12</span></span>
+      </div>
+      <div id="weapon-name">Plazmový vrhač</div>
       <div id="reload-hint" class="hidden">R — PŘEBÍT</div>
     </div>
 
-    <div id="crosshair"><span></span><span></span><span></span><span></span><i></i></div>
-
-    <div id="hitmarker"></div>
-    <div id="damage-vignette"></div>
     <div id="toast-stack"></div>
-    <div id="minimap"><canvas id="minimap-canvas" width="220" height="220"></canvas></div>
+    <div id="minimap"><canvas id="minimap-canvas" width="240" height="240"></canvas></div>
   </div>
 
   <!-- ============ MENU ============ -->
@@ -138,7 +132,8 @@
 
   <div id="loading">
     <div class="load-inner">
-      <div class="load-title">STAVÍME BRNO…</div>
+      <div class="load-sigil"></div>
+      <div class="load-title">Stavíme Brno…</div>
       <div class="load-bar"><div id="load-fill"></div></div>
       <div class="load-step" id="load-step">inicializace</div>
       <div id="load-error" class="load-error hidden" role="alert">

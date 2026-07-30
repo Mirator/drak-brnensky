@@ -84,17 +84,20 @@ the dragon. Survive past it and the waves keep coming, harder.
 
 | File | Responsibility |
 | --- | --- |
-| `src/main.js` | renderer, lighting, sky, game states, wave director, glue |
-| `src/city.js` | map layout, ground plan painting, building placement, props, trams |
-| `src/landmarks.js` | hand-modelled landmarks (merged per material) |
-| `src/player.js` | character rig, procedural animation, movement & weapon state |
-| `src/enemies.js` | four archetypes, steering AI, stuck recovery, health bars |
+| `src/main.js` | game states, wave director, integration glue |
+| `src/render/` | post-processing stack, cascaded shadows, IBL bake, sky and aerial perspective |
+| `src/city.js` + `src/city/` | map layout, ground plan, plot subdivision, buildings, roofscape, shopfronts, props, vegetation, trams, chunked LOD |
+| `src/landmarks.js` + `src/landmarks/` | hand-modelled landmarks, one module each, merged per material |
+| `src/player.js` + `src/character/` | 22-bone rig, skinned mesh, locomotion, aim layer, cloth, weapon |
+| `src/enemies.js` + `src/creatures/` | four archetypes, steering AI, pack/perch behaviour, boss choreography |
 | `src/camera.js` | over-the-shoulder chase camera with wall-aware pull-in |
-| `src/physics.js` | AABB collision world on a uniform grid, ray marching |
-| `src/vfx.js` | pooled projectiles, particle cloud, explosions, rifts |
-| `src/hud.js` | bars, ammo, compass, rotating minimap, toasts, boss bar |
-| `src/audio.js` | synthesised SFX and an ambient drone |
-| `src/textures.js` | canvas-generated facades, roofs, stone, cobbles |
+| `src/physics.js` | AABB collision world on a uniform grid, ray marching, surface types |
+| `src/rigidbody.js` | rigid bodies, ragdolls, pre-fractured breakables, ballistics |
+| `src/vfx.js` + `src/vfx/` | instanced particles, decals, beams, explosions, flame, rifts |
+| `src/hud.js` | crosshair, ammo, damage indicators, minimap, toasts, boss bar |
+| `src/audio.js` | synthesised SFX, procedural reverb zones, adaptive music |
+| `src/textures.js` + `src/textures/` | procedural PBR: albedo, normal, ORM packing, signage |
+| `src/materials.js` | cached material registry, resolution tiers, `TILE_METRES` |
 | `src/geometry.js` | safe geometry merging and the gable-roof builder |
 
 Some notes on how it works:
@@ -107,9 +110,24 @@ Some notes on how it works:
   capsules are pushed out horizontally and can step onto anything within their
   step height — which is why the hills are built as many shallow terraces rather
   than a few tall slabs.
-- **Draw calls.** Buildings are merged into one mesh per facade style and
-  lighting variant, landmarks into one mesh per material; trees and lamps are
-  instanced. A full frame is ~150–400 draw calls and ~370k triangles.
+- **Draw calls.** The city is split into spatial chunks and merged per material
+  per chunk, so frustum culling actually removes work — before chunking it was
+  one map-wide mesh per material and nothing was ever culled. Landmarks merge
+  per material; repeated props are instanced. Fine detail (chimneys, railings,
+  downpipes, signage, wires) does not cast shadows, which matters because the
+  three shadow cascades each re-render the casters. Camera pass plus cascades is
+  ~0.9M triangles.
+- **Post-processing.** Everything goes through an `EffectComposer` stack in
+  `src/render/postfx.js` — GTAO, bloom, aim-only depth of field, god rays, SMAA,
+  a still-frame accumulation pass, a filmic grade and a sharpen. `renderer.info`
+  is reset once per frame rather than per `render()` call, because the composer
+  issues one per pass and `autoReset` would leave `stats()` describing only the
+  final fullscreen quad.
+- **Texel density.** `src/materials.js` exports `TILE_METRES` — how much world
+  space one texture tile covers, derived from the grid each generator bakes —
+  plus `groundRepeat(name, widthM, depthM)`. Callers size from world extent
+  rather than hand-tuned `repeat` values, so paving stays at a real 0.10 m
+  granite sett module instead of drifting to metre-wide slabs.
 - **Lights.** Dynamic lights live in fixed-size pools that stay in the scene at
   zero intensity, because changing the visible light count forces three.js to
   recompile materials mid-fight.

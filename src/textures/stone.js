@@ -1,0 +1,172 @@
+import * as THREE from 'three';
+import { Rng } from '../rng.js';
+import { dual, pick, grain, tierSize } from './core.js';
+import { heightToNormal, aoFromHeight, noiseGray, packORM } from './pbr.js';
+import { makeFbm, makeWorley } from './noise.js';
+
+const H_MORTAR = 60;
+const H_BLOCK = 150;
+
+/** Like `shade()` in core.js (lightness-only), but also allows a small
+ * saturation nudge -- real ashlar varies in value and a little in
+ * saturation, almost never in hue (a wall is one stone from one quarry).
+ * Kept local to stone.js rather than widening `shade()`'s shared signature,
+ * since `shade()` is used unmodified elsewhere (facades.js, misc.js). */
+function shadeHSL(hex, lightAmt, satAmt = 0) {
+  const c = new THREE.Color(hex);
+  const hsl = {};
+  c.getHSL(hsl);
+  c.setHSL(hsl.h, Math.max(0, Math.min(1, hsl.s + satAmt / 100)), Math.max(0, Math.min(1, hsl.l + lightAmt / 100)));
+  return `#${c.getHexString()}`;
+}
+
+/** Lichen/patina as a thin tint blended partway toward green from the
+ * stone's OWN hue, desaturated and slightly darkened -- not an independent
+ * green hex replacing the block's colour outright (that read as a
+ * harlequin hue-swap once course height dropped to real scale and enough
+ * blocks were on screen for the per-block variance to be visible as
+ * texture rather than broad drift). */
+function lichenTint(hex, lightAmt, blend) {
+  const c = new THREE.Color(hex);
+  const hsl = {};
+  c.getHSL(hsl);
+  const target = 0.29; // ~104 deg, mossy yellow-green
+  const hue = hsl.h + (target - hsl.h) * blend;
+  const sat = Math.max(0, Math.min(1, hsl.s * 0.55));
+  const light = Math.max(0, Math.min(1, hsl.l + lightAmt / 100 - 0.05));
+  c.setHSL(hue, sat, light);
+  return `#${c.getHexString()}`;
+}
+
+/**
+ * Gothic ashlar: horizontal courses, varied block widths, weathering
+ * streaks running down from ledges, lichen patches, soot in recesses,
+ * tool-mark hatching on the block faces.
+ *
+ * `scale` keeps its original meaning (it feeds straight into the texture's
+ * UV repeat, exactly as before) so every existing call site — the
+ * cathedral, the castle, both sharing one material at scale=2 — keeps
+ * working unmodified. The base canvas resolution instead scales with the
+ * *requested tile detail* (`detail`, new/optional) so a caller that does
+ * know its own world-space footprint (a landmark author picking a bigger
+ * `scale` for a broad rampart vs. a thin buttress) gets a denser texel
+ * grid rather than the same blurry 128px tile stretched further.
+ */
+/** Real-world metres spanned by ONE repeat of the ashlar texture, i.e. at
+ * `scale = 1`: the draw loop always lays 8 fixed courses across the tile
+ * (`rows = 8`) regardless of `scale` (only the UV repeat count and the
+ * canvas's texel density change with `scale`, not the course count), and a
+ * real Gothic ashlar course runs ~0.30-0.50 m tall -- at the 0.40 m
+ * midpoint, 8 * 0.40 = 3.2 m per tile. `scale` is the repeat count on top of
+ * that: a wall `H` metres tall wants `scale = H / STONE_TILE_M` (see
+ * `groundRepeat()` in materials.js). At today's uncommented `scale: 2` call
+ * sites that's 6.4 m of coverage -- whether that's right for the wall in
+ * question is for the call site's owner to check against `STONE_TILE_M`. */
+export const STONE_TILE_M = 3.2;
+
+export function makeStoneMaterial(base = '#8d8577', mortar = '#6e675c', scale = 1) {
+  const S = tierSize(Math.max(256, Math.min(512, Math.round(256 * Math.sqrt(Math.max(1, scale))))));
+  const seed = 4242;
+  const rngNoise = new Rng(seed + 5);
+  const blotch = makeFbm(rngNoise, { cells: 5, octaves: 3 });
+  const lichenField = makeWorley(rngNoise, 6);
+
+  const draw = (ctx, rng, mode) => {
+    ctx.fillStyle = pick(mode, mortar, H_MORTAR);
+    ctx.fillRect(0, 0, S, S);
+    const rows = 8;
+    const rh = S / rows;
+    for (let r = 0; r < rows; r++) {
+      let x = r % 2 ? -S * 0.11 : 0;
+      while (x < S) {
+        const w = rng.float(S * 0.15, S * 0.27);
+        const u = (x + w / 2) / S, v = r / rows;
+        const b = blotch(u * 3, v * 3);
+        const soot = v < 0.28 ? (0.28 - v) * 1.4 : 0; // soot gathers high in recesses
+        const lichenD = lichenField(u * 6, v * 6).f1;
+        // Lichen belongs in shaded recesses, not on every face: gate it to
+        // the same top-of-course recess band soot uses, and shrink the
+        // Worley capture radius hard (0.28 -> 0.11) so it patches a small
+        // fraction of even that band instead of ~20%+ of the whole wall.
+        const lichen = v < 0.3 && lichenD < 0.11;
+
+        if (mode === 'albedo') {
+          // Per-block variance: lightness ~+-8%, saturation ~+-3%, hue
+          // untouched -- a wall is one stone from one quarry. (Previously
+          // +-12% lightness with no saturation term and no cap, which read
+          // as much stronger blotching once course height dropped to real
+          // scale.)
+          let fill = shadeHSL(base, (b - 0.5) * 16 - soot * 10, (b - 0.5) * 6);
+          if (lichen) fill = lichenTint(base, (b - 0.5) * 16, 0.4 + (b - 0.5) * 0.2);
+          ctx.fillStyle = fill;
+        } else {
+          ctx.fillStyle = pick(mode, undefined, H_BLOCK + (b - 0.5) * 40 - (lichen ? 12 : 0));
+        }
+        ctx.fillRect(x + S * 0.01, r * rh + S * 0.01, w - S * 0.02, rh - S * 0.02);
+
+        if (mode === 'albedo') {
+          // tool-mark hatching
+          ctx.strokeStyle = 'rgba(0,0,0,0.06)';
+          ctx.lineWidth = 1;
+          for (let hx = x; hx < x + w; hx += S * 0.02) {
+            ctx.beginPath();
+            ctx.moveTo(hx, r * rh + S * 0.015);
+            ctx.lineTo(hx + S * 0.012, r * rh + rh - S * 0.015);
+            ctx.stroke();
+          }
+        }
+        x += w;
+      }
+    }
+
+    // weathering streaks running down from ledges (every other course top)
+    for (let r = 0; r < rows; r += 3) {
+      const streakX = rng.float(S * 0.1, S * 0.9);
+      const w = rng.float(S * 0.03, S * 0.07);
+      ctx.globalAlpha = mode === 'albedo' ? 0.14 : 0.25;
+      const g = ctx.createLinearGradient(0, r * rh, 0, S);
+      g.addColorStop(0, mode === 'albedo' ? 'rgba(20,18,14,0.9)' : `rgb(${H_BLOCK - 30},${H_BLOCK - 30},${H_BLOCK - 30})`);
+      g.addColorStop(1, 'rgba(20,18,14,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(streakX, r * rh, w, S - r * rh);
+      ctx.globalAlpha = 1;
+    }
+
+    grain(ctx, S, S, mode === 'albedo' ? 16 : 8, rng);
+  };
+
+  const { color, height } = dual(seed, S, S, draw);
+  const map = new THREE.CanvasTexture(color);
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.repeat.set(scale, scale);
+  map.anisotropy = 8;
+  map.colorSpace = THREE.SRGBColorSpace;
+
+  const normal = heightToNormal(height, 1.7);
+  const nmap = new THREE.CanvasTexture(normal);
+  nmap.wrapS = nmap.wrapT = THREE.RepeatWrapping;
+  nmap.repeat.set(scale, scale);
+  nmap.anisotropy = 8;
+  nmap.colorSpace = THREE.NoColorSpace;
+
+  const ao = aoFromHeight(height, { strength: 1.4 });
+  const rough = noiseGray(S, S, blotch, { base: 0.82, variation: 0.2 });
+  const orm = packORM(S, S, { ao, rough, metal: 0.02 });
+  const ormMap = new THREE.CanvasTexture(orm);
+  ormMap.wrapS = ormMap.wrapT = THREE.RepeatWrapping;
+  ormMap.repeat.set(scale, scale);
+  ormMap.anisotropy = 8;
+  ormMap.colorSpace = THREE.NoColorSpace;
+
+  return new THREE.MeshStandardMaterial({
+    map,
+    normalMap: nmap,
+    normalScale: new THREE.Vector2(1, 1),
+    roughnessMap: ormMap,
+    metalnessMap: ormMap,
+    aoMap: ormMap,
+    roughness: 1,
+    metalness: 1,
+    envMapIntensity: 0.7,
+  });
+}
