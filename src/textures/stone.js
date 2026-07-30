@@ -1,11 +1,42 @@
 import * as THREE from 'three';
 import { Rng } from '../rng.js';
-import { dual, pick, grain, shade, tierSize } from './core.js';
+import { dual, pick, grain, tierSize } from './core.js';
 import { heightToNormal, aoFromHeight, noiseGray, packORM } from './pbr.js';
 import { makeFbm, makeWorley } from './noise.js';
 
 const H_MORTAR = 60;
 const H_BLOCK = 150;
+
+/** Like `shade()` in core.js (lightness-only), but also allows a small
+ * saturation nudge -- real ashlar varies in value and a little in
+ * saturation, almost never in hue (a wall is one stone from one quarry).
+ * Kept local to stone.js rather than widening `shade()`'s shared signature,
+ * since `shade()` is used unmodified elsewhere (facades.js, misc.js). */
+function shadeHSL(hex, lightAmt, satAmt = 0) {
+  const c = new THREE.Color(hex);
+  const hsl = {};
+  c.getHSL(hsl);
+  c.setHSL(hsl.h, Math.max(0, Math.min(1, hsl.s + satAmt / 100)), Math.max(0, Math.min(1, hsl.l + lightAmt / 100)));
+  return `#${c.getHexString()}`;
+}
+
+/** Lichen/patina as a thin tint blended partway toward green from the
+ * stone's OWN hue, desaturated and slightly darkened -- not an independent
+ * green hex replacing the block's colour outright (that read as a
+ * harlequin hue-swap once course height dropped to real scale and enough
+ * blocks were on screen for the per-block variance to be visible as
+ * texture rather than broad drift). */
+function lichenTint(hex, lightAmt, blend) {
+  const c = new THREE.Color(hex);
+  const hsl = {};
+  c.getHSL(hsl);
+  const target = 0.29; // ~104 deg, mossy yellow-green
+  const hue = hsl.h + (target - hsl.h) * blend;
+  const sat = Math.max(0, Math.min(1, hsl.s * 0.55));
+  const light = Math.max(0, Math.min(1, hsl.l + lightAmt / 100 - 0.05));
+  c.setHSL(hue, sat, light);
+  return `#${c.getHexString()}`;
+}
 
 /**
  * Gothic ashlar: horizontal courses, varied block widths, weathering
@@ -53,11 +84,20 @@ export function makeStoneMaterial(base = '#8d8577', mortar = '#6e675c', scale = 
         const b = blotch(u * 3, v * 3);
         const soot = v < 0.28 ? (0.28 - v) * 1.4 : 0; // soot gathers high in recesses
         const lichenD = lichenField(u * 6, v * 6).f1;
-        const lichen = lichenD < 0.28;
+        // Lichen belongs in shaded recesses, not on every face: gate it to
+        // the same top-of-course recess band soot uses, and shrink the
+        // Worley capture radius hard (0.28 -> 0.11) so it patches a small
+        // fraction of even that band instead of ~20%+ of the whole wall.
+        const lichen = v < 0.3 && lichenD < 0.11;
 
         if (mode === 'albedo') {
-          let fill = shade(base, (b - 0.5) * 24 - soot * 18);
-          if (lichen) fill = shade('#7a8a52', (b - 0.5) * 20);
+          // Per-block variance: lightness ~+-8%, saturation ~+-3%, hue
+          // untouched -- a wall is one stone from one quarry. (Previously
+          // +-12% lightness with no saturation term and no cap, which read
+          // as much stronger blotching once course height dropped to real
+          // scale.)
+          let fill = shadeHSL(base, (b - 0.5) * 16 - soot * 10, (b - 0.5) * 6);
+          if (lichen) fill = lichenTint(base, (b - 0.5) * 16, 0.4 + (b - 0.5) * 0.2);
           ctx.fillStyle = fill;
         } else {
           ctx.fillStyle = pick(mode, undefined, H_BLOCK + (b - 0.5) * 40 - (lichen ? 12 : 0));

@@ -24,14 +24,27 @@ function paintPantiles(seed = 99) {
         const off = (Math.round(y / (s * 0.72))) % 2 ? s / 2 : 0;
         const row = y / S, col = (x + off) / S;
         const slipped = rng.chance(0.03);
-        const moss = mossField(col, row) > 0.62;
+        // Hard-capped coverage: moss patches a small fraction of the roof
+        // (shaded gutter-adjacent tiles), not ~1 in 3 of every tile --
+        // 0.62 threshold on this fbm field let moss cover far more area
+        // than "a patch here and there" once real course/tile scale made
+        // that variance visible as texture instead of broad tonal drift.
+        const moss = mossField(col, row) > 0.85;
         let hgt = H_TILE + (slipped ? -H_SLIP : 0) + (moss ? -8 : 0);
         // Draw every rng.float() unconditionally (even in 'height' mode)
         // so the albedo and height passes consume the RNG in lockstep —
         // otherwise later tiles' `slipped`/`moss` decisions would diverge
         // between the two canvases (see dual() in core.js).
         const hue = rng.float(8, 20), sat = rng.float(18, 34), light = rng.float(20, 34) + (slipped ? 10 : 0);
-        const mossHue = rng.float(78, 100), mossSat = rng.float(20, 34), mossLight = rng.float(18, 26);
+        // Moss as a patina blended from the tile's own clay hue toward
+        // green, desaturated and a touch darker -- not an independent
+        // green hue (78-100) replacing the tile outright, which is what
+        // produced flat green tiles regardless of the clay colour around
+        // them.
+        const mossBlend = rng.float(0.35, 0.55), mossSatMul = rng.float(0.45, 0.65), mossDarken = rng.float(4, 10);
+        const mossHue = hue + (100 - hue) * mossBlend;
+        const mossSat = sat * mossSatMul;
+        const mossLight = Math.max(10, light - mossDarken);
         if (mode === 'albedo') {
           ctx.fillStyle = moss ? `hsl(${mossHue},${mossSat}%,${mossLight}%)` : `hsl(${hue},${sat}%,${light}%)`;
         } else {
