@@ -46,7 +46,7 @@ export const RECTS = [
 export function build(b, ctx) {
   const { M, info, rng } = ctx;
   const { cx, cz } = SITE;
-  b.cluster('oldtown');
+  b.cluster('zelnyTrh');
 
   /* ================= 1. the sloping square ========================= */
   // Two shallow terraces across the upper (north) third, with a kerb, so the

@@ -6,9 +6,9 @@ A third-person action game set in central Brno, built with [three.js](https://th
 Rifts have torn open over the city and the Brno Dragon's brood is pouring out of them.
 Seal the rifts, hold the squares, then hunt the dragon itself on náměstí Svobody.
 
-Everything is generated at runtime — no model, texture or audio files. The city,
-the facades, the character, the enemies and every sound effect are built from
-primitives, canvas textures and WebAudio oscillators.
+The exterior plan and terrain are committed, offline OpenStreetMap and ČÚZK
+snapshots. Visuals, facades, characters, enemies and sounds remain procedural,
+built from primitives, canvas textures and WebAudio oscillators.
 
 ## Running it
 
@@ -50,8 +50,11 @@ from the `/drak-brnensky/` sub-path.
 
 ## The map
 
-A compressed but recognisable interpretation of the historic centre, 840 × 840 m,
-1 unit = 1 metre:
+An accurate 1.5 × 1.5 km exterior model of central Brno, centred on the
+OpenStreetMap footprint of Náměstí Svobody. One unit is one metre; `+x` points
+east and `+z` points south. Building footprints, roads, public spaces and tram
+lines come from a pinned OSM snapshot, while terrain is a 4 m grid resampled
+from ČÚZK DMR 5G:
 
 - **Petrov** — the cathedral of St Peter & Paul on its terraced hill, twin 84 m
   neo-gothic spires, rose window, buttresses you can hide behind
@@ -64,8 +67,29 @@ A compressed but recognisable interpretation of the historic centre, 840 × 840 
 - **Zelný trh** — the Parnas fountain and market stalls
 - **Mahenovo** and **Janáčkovo divadlo**, **Moravské náměstí** with Jošt's
   statue, and **hlavní nádraží** with its platform canopies
-- ~1400 procedurally placed period buildings hugging 28 named streets, with
-  trams running the tram routes
+- 2,001 imported building/building-part masses with preserved courtyards,
+  2,685 road/path features and trams following imported centre-lines
+
+The game starts at the same verified point on Náměstí Svobody after every
+restart, clear of obstacles and rails and facing the Marian plague column.
+
+### Refreshing the offline map
+
+The generated artifacts are committed; builds and CI never contact data
+services. To refresh the pinned snapshot manually:
+
+```bash
+npm run import:brno -- --date=2026-07-30T07:34:01Z
+```
+
+The importer writes `src/data/brno-map.json` and
+`src/data/brno-terrain.bin`. Keep the two datasets separate when distributing
+the game:
+
+- Map data © OpenStreetMap contributors, ODbL 1.0
+- Terrain derived from DMR 5G © ČÚZK, CC BY 4.0
+
+Detailed notices are in [`src/data/README.md`](src/data/README.md).
 
 ## Enemies
 
@@ -91,7 +115,7 @@ the dragon. Survive past it and the waves keep coming, harder.
 | `src/player.js` + `src/character/` | 22-bone rig, skinned mesh, locomotion, aim layer, cloth, weapon |
 | `src/enemies.js` + `src/creatures/` | four archetypes, steering AI, pack/perch behaviour, boss choreography |
 | `src/camera.js` | over-the-shoulder chase camera with wall-aware pull-in |
-| `src/physics.js` | AABB collision world on a uniform grid, ray marching, surface types |
+| `src/physics.js` | heightfield-aware AABB collision, ray/sphere casts and surface types |
 | `src/rigidbody.js` | rigid bodies, ragdolls, pre-fractured breakables, ballistics |
 | `src/vfx.js` + `src/vfx/` | instanced particles, decals, beams, explosions, flame, rifts |
 | `src/hud.js` | crosshair, ammo, damage indicators, minimap, toasts, boss bar |
@@ -102,14 +126,12 @@ the dragon. Survive past it and the waves keep coming, harder.
 
 Some notes on how it works:
 
-- **Ground plan.** The whole city plan (roads, tram rails, paving, parks) is
-  painted once into a 4096² canvas that becomes the ground texture. The same
-  drawing calls paint a 420² "flag map" that is read back as a grid and used for
-  building placement, spawn validity and the minimap.
-- **Collision.** Every solid is an axis-aligned box in a uniform grid. Vertical
-  capsules are pushed out horizontally and can step onto anything within their
-  step height — which is why the hills are built as many shallow terraces rather
-  than a few tall slabs.
+- **Ground plan.** Imported polygons and lines are rasterised into a 2 m,
+  750²-cell surface/occupancy map used for collision-safe spawns, navigation and
+  the minimap.
+- **Terrain and collision.** DMR 5G is decoded into a bilinear heightfield and
+  rendered as seam-aligned 128 m chunks. Ground lookup, surface casts,
+  projectiles, rigid bodies and ragdolls all query the same measured terrain.
 - **Draw calls.** The city is split into spatial chunks and merged per material
   per chunk, so frustum culling actually removes work — before chunking it was
   one map-wide mesh per material and nothing was ever culled. Landmarks merge
@@ -144,3 +166,8 @@ to step the simulation frame by frame, `shot(w, h)` for a PNG data URL,
 `input`. The dev server also accepts `POST /__shot` with `{name, data}` and
 writes the PNG into `shots/` — that combination is what the game was play-tested
 with, driving a scripted bot through whole waves headlessly.
+
+Standard deterministic QA hooks are also available:
+`window.advanceTime(ms)` and `window.render_game_to_text()`. The text state
+includes the coordinate convention, player/terrain position, nearest place,
+enemies, rifts and current objective.

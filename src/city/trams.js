@@ -71,7 +71,7 @@ function carGeometries() {
   };
 }
 
-export function buildTrams(group) {
+export function buildTrams(group, heightAt = null) {
   const geos = carGeometries();
   const mats = {
     livery: getMaterial('tramLivery', { seed: 1901 }),
@@ -142,7 +142,11 @@ export function buildTrams(group) {
         for (let s = 0; s < 2; s++) {
           const off = s * CAR_GAP - CAR_GAP / 2;
           mat4.compose(
-            _tmp.set(pos.x + fx * off, RAIL_Y, pos.z + fz * off),
+            _tmp.set(
+              pos.x + fx * off,
+              RAIL_Y + (heightAt ? heightAt(pos.x + fx * off, pos.z + fz * off) : 0),
+              pos.z + fz * off,
+            ),
             quat, one,
           );
           for (const key of Object.keys(meshes)) meshes[key].setMatrixAt(slots[s], mat4);

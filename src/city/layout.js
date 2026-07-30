@@ -1,3 +1,5 @@
+import { BRNO_MAP_SIZE, BRNO_PLACES } from '../data/brno-layout.js';
+
 /**
  * Map layout constants and the painter/flag-grid mechanism.
  *
@@ -8,7 +10,7 @@
  * deterministic: `FlagGrid` only ever writes exact FLAG values (never a
  * blended pixel), which is what `test/city.test.js` pins down.
  */
-export const MAP_SIZE = 840;
+export const MAP_SIZE = BRNO_MAP_SIZE;
 export const HALF = MAP_SIZE / 2;
 export const GRID_RES = 2;
 export const GN = MAP_SIZE / GRID_RES; // 420
@@ -18,18 +20,9 @@ export const MINI_SIZE = 512;
 export const FLAG = { FREE: 0, ROAD: 30, PLAZA: 60, PARK: 90, RESERVED: 120, TRACK: 150 };
 
 /** Named places — used for objectives, the compass and the minimap. */
-export const PLACES = {
-  svoboda: { name: 'nám. Svobody', x: 0, z: -10 },
-  zelnyTrh: { name: 'Zelný trh', x: -52, z: 78 },
-  radnice: { name: 'Stará radnice', x: -18, z: 44 },
-  petrov: { name: 'Petrov', x: -108, z: 168 },
-  spilberk: { name: 'Špilberk', x: -268, z: 42 },
-  moravske: { name: 'Moravské nám.', x: 18, z: -132 },
-  janacek: { name: 'Janáčkovo divadlo', x: 112, z: -170 },
-  mahen: { name: 'Mahenovo divadlo', x: 104, z: -66 },
-  nadrazi: { name: 'Hlavní nádraží', x: 22, z: 268 },
-  ceska: { name: 'Česká', x: -66, z: -96 },
-};
+export const PLACES = Object.fromEntries(
+  Object.entries(BRNO_PLACES).map(([key, value]) => [key, { ...value }]),
+);
 
 /**
  * Main streets.

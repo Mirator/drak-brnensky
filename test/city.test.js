@@ -19,7 +19,8 @@ test('flag grid stores only exact classifications at shape borders', () => {
 
   const known = new Set(Object.values(FLAG));
   assert.equal([...grid.data].every((value) => known.has(value)), true);
-  assert.equal(grid.data[210 * 420 + 210], FLAG.RESERVED);
+  const centre = GN / 2;
+  assert.equal(grid.data[centre * GN + centre], FLAG.RESERVED);
 });
 
 /* ------------------------------------------------------------------ */

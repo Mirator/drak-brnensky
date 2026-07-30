@@ -322,7 +322,9 @@ const COAT_COLOURS = [
 const SKIN_COLOURS = [0xc79a76, 0xa87452, 0xe0b892, 0x8a5c3c, 0xd0a882];
 
 /* ------------------------------------------------------------------ */
-export function buildProps(group, collision, { rng, flagAt, plots, seed, breakables, chunks }) {
+export function buildProps(group, collision, {
+  rng, flagAt, plots, seed, breakables, chunks, heightAt = null,
+}) {
   const art = new Rng(seed ^ 0x2f19b3);
   const plates = plateAtlas(art);
 
@@ -722,7 +724,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
   }
 
   /* ============ 7. pedestrians ======= */
-  const crowd = buildCrowd(rng, sets, { flagAt });
+  const crowd = buildCrowd(rng, sets, { flagAt, heightAt });
 
   /* ---- flush ---- */
   let meshes = 0;
@@ -752,7 +754,7 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
 /* ------------------------------------------------------------------ */
 /* pedestrians                                                         */
 /* ------------------------------------------------------------------ */
-function buildCrowd(rng, sets, { flagAt }) {
+function buildCrowd(rng, sets, { flagAt, heightAt }) {
   /* Combat spaces the wave director uses. Pedestrians keep clear of them —
    * an empty city centre reads as wrong, but so does a crowd standing in a
    * boss arena. `scatter()` is exposed for whoever wants them to bolt. */
@@ -836,13 +838,14 @@ function buildCrowd(rng, sets, { flagAt }) {
         const s = samplePolyline(p.road.pts, p.s);
         const x = s.x - s.tz * p.walkOff;
         const z = s.z + s.tx * p.walkOff;
+        const groundY = heightAt ? heightAt(x, z) : 0;
         const heading = Math.atan2(-s.tz * p.dir, s.tx * p.dir);
         const stride = time * p.speed * 3.4 + p.phase;
         const bob = Math.abs(Math.sin(stride)) * 0.045;
-        write(meshes.torso, i, x, 0.11 + bob, z, heading, p.lean);
-        write(meshes.head, i, x, 0.11 + bob, z, heading + Math.sin(stride * 0.5) * 0.12);
+        write(meshes.torso, i, x, groundY + 0.11 + bob, z, heading, p.lean);
+        write(meshes.head, i, x, groundY + 0.11 + bob, z, heading + Math.sin(stride * 0.5) * 0.12);
         if (meshes.leg) {
-          const hip = 0.92 + 0.11;
+          const hip = groundY + 0.92 + 0.11;
           write(meshes.leg, i * 2, x, hip + bob, z, heading, Math.sin(stride) * 0.62);
           write(meshes.leg, i * 2 + 1, x, hip + bob, z, heading, -Math.sin(stride) * 0.62);
         }

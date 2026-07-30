@@ -1018,9 +1018,19 @@ const PARTS = {
  *   draw call per cluster. Anything pushed at tier 1 in another material
  *   silently falls back to tier 0.
  */
+const EMPTY_TRANSFORM = { x: 0, y: 0, z: 0 };
+
 export class Builder {
-  constructor(collision, M) {
-    this.collision = collision;
+  constructor(collision, M, { transforms = {} } = {}) {
+    this.realCollision = collision;
+    this.transforms = transforms;
+    // Keep collision and geometry under the same per-landmark translation.
+    this.collision = {
+      add: (x, z, w, d, y, h, tag, surface) => {
+        const tr = this.transforms[this._cluster] || EMPTY_TRANSFORM;
+        return collision.add(x + tr.x, z + tr.z, w, d, y + tr.y, h, tag, surface);
+      },
+    };
     this.M = M;
     this.base = new Map();
     this.orn = new Map();
@@ -1056,6 +1066,8 @@ export class Builder {
 
   _push(mat, geo) {
     if (!geo) return geo;
+    const tr = this.transforms[this._cluster];
+    if (tr) geo.translate(tr.x || 0, tr.y || 0, tr.z || 0);
     if (this._tier === 1 && this.ornamentMats.has(mat)) {
       let byMat = this.orn.get(this._cluster);
       if (!byMat) this.orn.set(this._cluster, (byMat = new Map()));

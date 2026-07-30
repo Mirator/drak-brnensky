@@ -35,9 +35,9 @@ export const RECTS = [
 ];
 
 export function build(b, ctx) {
-  const { M, info, group, animated } = ctx;
+  const { M, info, group, animated, transforms } = ctx;
   const { cx, cz } = SITE;
-  b.cluster('oldtown');
+  b.cluster('radnice');
 
   const NORTH = cz - 10; // the Radnická street frontage, z = 34
   const DEPTH = 19;
@@ -249,6 +249,8 @@ export function build(b, ctx) {
     dragon.add(eyeMesh);
   }
   dragon.position.set(PASS_X, 4.3, dz);
+  const relocation = transforms?.radnice;
+  if (relocation) dragon.position.add(new THREE.Vector3(relocation.x, relocation.y, relocation.z));
   dragon.rotation.y = Math.PI / 2 + 0.12; // hangs broadside, like the real one
   dragon.scale.setScalar(1.15);
   group.add(dragon);

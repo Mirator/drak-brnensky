@@ -15,6 +15,11 @@ import { buildProps } from './city/props.js';
 import { buildVegetation } from './city/vegetation.js';
 import { buildTrams } from './city/trams.js';
 import { createBreakables } from './city/breakables.js';
+import { buildTerrain } from './city/terrain.js';
+import {
+  buildImportedBuildings, buildImportedMinimap, buildImportedPlan, createFlagAt,
+  drapeChildren, drapeChunkBatches, drapeCollisionBoxes, installImportedLayout, NavigationField,
+} from './city/imported.js';
 
 /* ==================================================================
    DRAK BRNĚNSKÝ — the city.
@@ -51,7 +56,7 @@ function landmarkFootprints() {
   return FALLBACK_FOOTPRINTS;
 }
 
-export function buildCity(scene, collision, rngSeed = 20250726) {
+function buildLegacyCity(scene, collision, rngSeed = 20250726) {
   const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   const rng = new Rng(rngSeed);
   const painter = new Painter();
@@ -276,6 +281,202 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
       if (props.update) props.update(dt, t);
       // one frame of latency by design: the camera is sampled during render
       chunks.update(cameraAt.x, cameraAt.z);
+    },
+  };
+}
+
+/**
+ * Build either the committed geospatial Brno snapshot (normal runtime) or the
+ * old procedural fixture (kept for low-level tests and developer comparison).
+ */
+export function buildCity(scene, collision, dataOrSeed = 20250726, maybeSeed = 20250726) {
+  if (dataOrSeed?.map && dataOrSeed?.terrain) {
+    return buildGeospatialCity(scene, collision, dataOrSeed, maybeSeed);
+  }
+  return buildLegacyCity(scene, collision, dataOrSeed);
+}
+
+function landmarkTransforms(terrain) {
+  const anchors = {
+    petrov: [-108, 168, 6.6],
+    spilberk: [-268, 44, 15],
+    radnice: [-18, 44, 0],
+    zelnyTrh: [-52, 78, 0],
+    mahen: [104, -66, 0],
+    janacek: [112, -170, 0],
+    moravske: [18, -136, 0],
+    nadrazi: [22, 292, 0],
+    ceska: [-66, -96, 0],
+  };
+  const out = {};
+  for (const [key, [ox, oz, base]] of Object.entries(anchors)) {
+    const place = PLACES[key];
+    if (!place) continue;
+    out[key] = {
+      x: place.x - ox,
+      z: place.z - oz,
+      y: terrain.heightAt(place.x, place.z) - base,
+    };
+  }
+  out.svoboda = { x: 0, z: 0, y: terrain.heightAt(PLACES.svoboda.x, PLACES.svoboda.z) };
+  return out;
+}
+
+function countScene(group) {
+  let sceneTriangles = 0; let shadowTriangles = 0; let meshes = 0;
+  group.traverse((object) => {
+    if (!object.isMesh || !object.geometry?.attributes?.position) return;
+    const per = object.geometry.index ? object.geometry.index.count / 3 : object.geometry.attributes.position.count / 3;
+    const triangles = per * (object.isInstancedMesh ? object.count : 1);
+    sceneTriangles += triangles;
+    if (object.castShadow) shadowTriangles += triangles;
+    meshes++;
+  });
+  return { sceneTriangles: Math.round(sceneTriangles), shadowTriangles: Math.round(shadowTriangles), meshes };
+}
+
+function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
+  const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
+  const rng = new Rng(rngSeed);
+  const breakables = createBreakables();
+  const cityGroup = new THREE.Group();
+  cityGroup.name = 'city:brno-osm-dmr5g';
+  // Repeated street-life props are globally instanced per kind. Imported
+  // buildings keep their own 3x3 spatial buckets, while terrain retains its
+  // independent seam-aligned 128 m chunks.
+  const chunks = new Chunks({ cells: 1, detailRadius: 180 });
+  const buildingChunks = new Chunks({ cells: 3, detailRadius: 180 });
+
+  installImportedLayout(map);
+  collision.setTerrain(terrain);
+  const terrainInfo = buildTerrain(cityGroup, terrain);
+  const cameraAt = trackCamera(terrainInfo.meshes[0]);
+  const plan = buildImportedPlan(cityGroup, map, terrain);
+  const flagAt = createFlagAt(plan.flags);
+  const navigation = new NavigationField(flagAt, terrain);
+  navigation.rebuild(map.start.x, map.start.z);
+  const buildingInfo = buildImportedBuildings(cityGroup, collision, map, terrain, buildingChunks);
+
+  const stoneMat = getMaterial('stone', { base: '#8d8577', mortar: '#6e675c', scale: 2 });
+  const roofMat = getMaterial('roof');
+  const landmarkInfo = landmarksModule.buildLandmarks(cityGroup, collision, {
+    stoneMat, roofMat, rng, transforms: landmarkTransforms(terrain),
+  });
+
+  // Retain the procedural street life, but project every generated element
+  // onto the measured heightfield before its chunk buffers are uploaded.
+  const vegetationStart = cityGroup.children.length;
+  const vegetationColliderStart = collision.boxes.length;
+  const vegetation = buildVegetation(cityGroup, collision, { rng, chunks });
+  drapeChildren(cityGroup, vegetationStart, terrain);
+  drapeCollisionBoxes(collision, vegetationColliderStart, terrain);
+  const propsStart = cityGroup.children.length;
+  const propsColliderStart = collision.boxes.length;
+  const props = buildProps(cityGroup, collision, {
+    rng, flagAt, plots: [], seed: rngSeed, breakables, chunks,
+    heightAt: (x, z) => terrain.heightAt(x, z),
+  });
+  drapeChildren(cityGroup, propsStart, terrain);
+  drapeCollisionBoxes(collision, propsColliderStart, terrain);
+  drapeChunkBatches(chunks, terrain);
+
+  const tramInfo = buildTrams(cityGroup, (x, z) => terrain.heightAt(x, z));
+  const trams = tramInfo.trams;
+  const chunkMeshes = chunks.finish(cityGroup);
+  chunks.update(0, 0);
+
+  const edge = HALF - 26;
+  collision.bounds = { x0: -edge, z0: -edge, x1: edge, z1: edge };
+  scene.add(cityGroup);
+  const mini = buildImportedMinimap(map);
+  const registeredNow = breakables.register(collision.rigid || collision.rigidBody || collision.physics || null);
+  const sceneCounts = countScene(cityGroup);
+
+  const stats = {
+    source: map.metadata.sourceDate,
+    mapSize: MAP_SIZE,
+    buildings: buildingInfo.count,
+    courtyards: buildingInfo.courtyards,
+    terrainChunks: terrainInfo.meshes.length,
+    mapMeshes: plan.meshes,
+    chunkMeshes,
+    detailMeshes: chunks.detailMeshes.length,
+    drawCalls: sceneCounts.meshes,
+    ...sceneCounts,
+    colliders: collision.boxes.length,
+    breakables: breakables.count,
+    breakablesIntact: breakables.intact,
+    props: props.counts,
+    vegetation,
+    generationMs: typeof performance !== 'undefined' ? Math.round(performance.now() - t0) : 0,
+  };
+
+  return {
+    group: cityGroup,
+    buildings: map.buildings,
+    places: PLACES,
+    landmarks: landmarkInfo,
+    props,
+    trams,
+    minimap: mini,
+    flagAt,
+    terrain,
+    navigation,
+    metadata: map.metadata,
+    start: {
+      x: map.start.x,
+      z: map.start.z,
+      y: terrain.heightAt(map.start.x, map.start.z),
+      yaw: Math.atan2(PLACES.column.x - map.start.x, PLACES.column.z - map.start.z),
+    },
+    reserved: [],
+    stats,
+    registerBreakables: (rigidWorld, opts) => breakables.register(rigidWorld, opts),
+    restoreBreakables(rigidWorld) {
+      const restored = breakables.restore();
+      return { restored, registered: breakables.register(rigidWorld, { force: true }) };
+    },
+    reregisterBreakables: (rigidWorld) => breakables.reregister(rigidWorld),
+    breakablesRegisteredAtBuild: registeredNow,
+    randomOpenPoint(cx, cz, radius, rngRef = rng, clearance = 2) {
+      for (let i = 0; i < 150; i++) {
+        const a = rngRef.float(0, Math.PI * 2);
+        const r = radius * Math.sqrt(rngRef.float(0.08, 1));
+        const x = cx + Math.cos(a) * r; const z = cz + Math.sin(a) * r;
+        if (Math.abs(x) > edge - 6 || Math.abs(z) > edge - 6) continue;
+        const f = flagAt(x, z);
+        if (f !== FLAG.ROAD && f !== FLAG.PLAZA && f !== FLAG.PARK && f !== FLAG.TRACK) continue;
+        if (terrain.slopeAt(x, z) > 0.55 || !navigation.reachable(x, z)) continue;
+        let clear = true;
+        const y = terrain.heightAt(x, z);
+        for (let k = 0; k < 9 && clear; k++) {
+          const ang = (k / 8) * Math.PI * 2;
+          const ox = k === 8 ? 0 : Math.cos(ang) * clearance;
+          const oz = k === 8 ? 0 : Math.sin(ang) * clearance;
+          if (collision.isSolidAt(x + ox, y + 1.3, z + oz)) clear = false;
+        }
+        if (clear) return new THREE.Vector3(x, y, z);
+      }
+      return null;
+    },
+    navigationDirection(x, z, targetX, targetZ) {
+      return navigation.directionAt(x, z, targetX, targetZ);
+    },
+    lodStats() {
+      let visible = 0;
+      for (const d of chunks.detailMeshes) if (d.mesh.visible) visible++;
+      return {
+        detailMeshes: chunks.detailMeshes.length,
+        detailVisible: visible,
+        cameraTracked: cameraAt.seen,
+        cameraAt: [Math.round(cameraAt.x), Math.round(cameraAt.z)],
+      };
+    },
+    update(dt, t) {
+      for (const tram of trams) tram.update(dt);
+      if (props.update) props.update(dt, t);
+      chunks.update(cameraAt.x, cameraAt.z);
+      landmarkInfo.update?.(dt, t);
     },
   };
 }

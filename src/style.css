@@ -683,3 +683,19 @@ button.ghost:hover { background: rgba(255, 255, 255, 0.06); color: #fff; box-sha
 
   #toast-stack { width: calc(100vw - 32px); top: 14%; }
 }
+.data-attribution {
+  margin-top: 12px;
+  color: rgba(220, 218, 210, 0.48);
+  font: 500 10px/1.45 system-ui, sans-serif;
+}
+
+.data-attribution a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.data-attribution a:hover,
+.data-attribution a:focus-visible {
+  color: #ffad43;
+  text-decoration: underline;
+}
