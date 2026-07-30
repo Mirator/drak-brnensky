@@ -63,8 +63,15 @@ export class CollisionWorld {
     this.boxes = [];
     this.grid = new Map();
     this.bounds = { x0: -Infinity, z0: -Infinity, x1: Infinity, z1: Infinity };
-    /** Surface of the implicit street plane at y = 0. */
+    /** Optional geospatial terrain heightfield. Existing callers remain valid. */
+    this.terrain = null;
+    /** Surface of the implicit street/terrain plane. */
     this.groundSurface = SURFACES.cobble;
+  }
+
+  setTerrain(heightfield) {
+    this.terrain = heightfield || null;
+    return this;
   }
 
   key(cx, cz) {
@@ -172,7 +179,7 @@ export class CollisionWorld {
    */
   groundHeight(x, z, fromY = 1e6, radius = 0.35, step = 0.65) {
     const boxes = this.query(x - radius, z - radius, x + radius, z + radius, _tmpA);
-    let best = 0;
+    let best = this.terrain ? this.terrain.heightAt(x, z) : 0;
     for (let i = 0; i < boxes.length; i++) {
       const b = boxes[i];
       if (b.tag === 'nostand') continue;
@@ -251,11 +258,12 @@ export class CollisionWorld {
    * hit distance or Infinity. `stepSize` is retained for caller compatibility.
    */
   raycast(origin, dir, maxDist, stepSize = 0.6) {
-    void stepSize;
     let nearest = Infinity;
 
-    if (origin.y < 0) return 0;
-    if (dir.y < -1e-9) {
+    if (this.terrain) {
+      nearest = terrainRayDistance(this.terrain, origin, dir, maxDist, 0, stepSize);
+    } else if (origin.y < 0) return 0;
+    else if (dir.y < -1e-9) {
       const groundT = -origin.y / dir.y;
       if (groundT <= maxDist) nearest = groundT;
     }
@@ -300,7 +308,8 @@ export class CollisionWorld {
         best = b;
       }
     }
-    return this.surfaceOf(best);
+    if (best) return this.surfaceOf(best);
+    return this.groundSurface;
   }
 
   /**
@@ -323,7 +332,10 @@ export class CollisionWorld {
     let hitBox = null;
     let ground = false;
 
-    if (!ignoreGround) {
+    if (!ignoreGround && this.terrain) {
+      const t = terrainRayDistance(this.terrain, origin, dir, maxDist);
+      if (t !== Infinity) { nearest = t; ground = true; }
+    } else if (!ignoreGround) {
       if (origin.y < 0) {
         out.hit = true;
         out.t = 0;
@@ -361,7 +373,12 @@ export class CollisionWorld {
     out.py = origin.y + dir.y * nearest;
     out.pz = origin.z + dir.z * nearest;
     if (ground) {
-      out.ny = 1;
+      if (this.terrain) {
+        const n = this.terrain.normalAt(out.px, out.pz);
+        out.nx = n.x; out.ny = n.y; out.nz = n.z;
+      } else {
+        out.ny = 1;
+      }
       out.surface = this.groundSurface;
       return out;
     }
@@ -399,7 +416,10 @@ export class CollisionWorld {
     let hitBox = null;
     let ground = false;
 
-    if (origin.y <= radius) {
+    if (this.terrain) {
+      const t = terrainRayDistance(this.terrain, origin, dir, maxDist, radius);
+      if (t !== Infinity) { nearest = t; ground = true; }
+    } else if (origin.y <= radius) {
       nearest = 0;
       ground = true;
     } else if (dir.y < -1e-9) {
@@ -431,7 +451,12 @@ export class CollisionWorld {
     out.py = origin.y + dir.y * nearest;
     out.pz = origin.z + dir.z * nearest;
     if (ground) {
-      out.ny = 1;
+      if (this.terrain) {
+        const n = this.terrain.normalAt(out.px, out.pz);
+        out.nx = n.x; out.ny = n.y; out.nz = n.z;
+      } else {
+        out.ny = 1;
+      }
       out.surface = this.groundSurface;
       return out;
     }
@@ -469,6 +494,39 @@ const _lo = [0, 0, 0];
 const _hi = [0, 0, 0];
 const _org = [0, 0, 0];
 const _dir = [0, 0, 0];
+
+/**
+ * Conservative heightfield ray march followed by binary refinement. The
+ * terrain is bilinear, so sampling at no more than half a source cell avoids
+ * the tunnelling that a frame-sized march would otherwise cause.
+ */
+function terrainRayDistance(terrain, origin, dir, maxDist, radius = 0, requestedStep = 0.6) {
+  if (dir.y >= 0 && origin.y - radius > (terrain.maxHeight ?? Infinity)) return Infinity;
+  const clearance = (t) => {
+    const x = origin.x + dir.x * t;
+    const y = origin.y + dir.y * t - radius;
+    const z = origin.z + dir.z * t;
+    return y - terrain.heightAt(x, z);
+  };
+  let previousT = 0;
+  if (clearance(0) <= 0) return 0;
+  const step = Math.max(0.15, Math.min(requestedStep || 0.6, (terrain.cellSize || 4) * 0.5));
+  for (let t = step; t <= maxDist + step * 0.5; t += step) {
+    const currentT = Math.min(t, maxDist);
+    const current = clearance(currentT);
+    if (current <= 0) {
+      let lo = previousT; let hi = currentT;
+      for (let i = 0; i < 10; i++) {
+        const mid = (lo + hi) / 2;
+        if (clearance(mid) > 0) lo = mid; else hi = mid;
+      }
+      return hi;
+    }
+    previousT = currentT;
+    if (currentT === maxDist) break;
+  }
+  return Infinity;
+}
 
 /**
  * Ray/AABB slab test that also reports which face was entered. `expand`

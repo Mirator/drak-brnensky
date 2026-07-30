@@ -12,6 +12,7 @@ import { CollisionWorld } from './physics.js';
 import { PhysicsWorld, playerRagdollBones } from './rigidbody.js';
 import { getMaterial } from './materials.js';
 import { buildCity, PLACES } from './city.js';
+import { loadBrnoData } from './city/data.js';
 import { Player, WEAPON } from './player.js';
 import { ChaseCamera } from './camera.js';
 import { Input } from './input.js';
@@ -29,6 +30,13 @@ import { bindSettings } from './settings.js';
 let lastTime = performance.now();
 const GAMEPLAY_SEED = 90210;
 let gameplayRng = new Rng(GAMEPLAY_SEED);
+const AUTOMATED_QA = typeof navigator !== 'undefined' && navigator.webdriver;
+const PRODUCTION_RENDER_QA = typeof location !== 'undefined'
+  && new URLSearchParams(location.search).get('qaRenderer') === 'production';
+const AUTOMATED_WAVE = AUTOMATED_QA && typeof location !== 'undefined'
+  ? Number(new URLSearchParams(location.search).get('qaWave') || 0)
+  : 0;
+let pendingStart = false;
 
 const state = {
   mode: 'loading', // loading | menu | playing | paused | dead | error
@@ -442,6 +450,11 @@ function createRenderer() {
  */
 function verifyPostStack() {
   if (!render) return;
+  if (AUTOMATED_QA && !PRODUCTION_RENDER_QA) {
+    postStackOk = false;
+    postStackProbe = { automatedQa: true, reason: 'CPU-bounded direct-render path' };
+    return;
+  }
   const savedPos = camera.position.clone();
   const savedQuat = camera.quaternion.clone();
   try {
@@ -629,18 +642,20 @@ async function boot() {
     vfx = new VFX(scene);
 
     await step(20, 'ulice, tramvaje, fasády');
-    world = buildCity(scene, collision);
+    const brnoData = await loadBrnoData();
+    world = buildCity(scene, collision, brnoData);
     registerCityBreakables();
 
     await step(62, 'Petrov, Špilberk, radnice');
     /* The character rig looks materials up through a `.get(name)` shim rather
      * than importing the registry, so it stays testable in isolation. */
     player = new Player(scene, collision, {
-      x: 16,
-      z: -4,
+      x: world.start.x,
+      z: world.start.z,
       rng: gameplayRng,
       materials: { get: (name) => getMaterial(name) },
     });
+    player.pos.y = world.start.y;
     chase = new ChaseCamera(camera, collision);
     enemies = new EnemyManager(scene, collision, vfx, gameplayRng);
     /* Hand the creatures the rigid-body solver so their deaths ragdoll. Without
@@ -669,6 +684,7 @@ async function boot() {
 
     await step(95, 'post-processing');
     render = createPostFX({ renderer, scene, camera, lighting, quality: DEFAULT_QUALITY });
+    if (AUTOMATED_QA && !PRODUCTION_RENDER_QA) render.setQuality('low');
 
     /* Soft particles. The linear-depth resolve skips itself when no pass
      * wants it (DOF is aim-only, and both readers are off on `low`), so an
@@ -698,15 +714,23 @@ async function boot() {
     }
 
     resizeRenderer();
-    renderer.compile(scene, camera);
+    // SwiftShader-based automated QA is CPU rendering. Deferring its shader
+    // compilation to the first requested frame keeps it bounded; desktop GPU
+    // play still receives the usual warm-up.
+    if (!AUTOMATED_QA || PRODUCTION_RENDER_QA) renderer.compile(scene, camera);
     verifyPostStack();
 
     await step(100, 'hotovo');
     loadEl.classList.add('done');
     setTimeout(() => loadEl.remove(), 600);
     state.mode = 'menu';
+    if (pendingStart) {
+      pendingStart = false;
+      startGame();
+      if (AUTOMATED_WAVE > 0) startWave(AUTOMATED_WAVE);
+    }
     lastTime = performance.now();
-    renderer.setAnimationLoop(tick);
+    renderer.setAnimationLoop(AUTOMATED_QA && !PRODUCTION_RENDER_QA ? null : tick);
   } catch (error) {
     showBootError(error);
   }
@@ -871,14 +895,14 @@ function startGame() {
   state.hurtDir = null;
   state.objectivePos = null;
 
-  player.pos.set(16, 0, -4);
+  player.pos.set(world.start.x, world.start.y, world.start.z);
   player.vel.set(0, 0, 0);
   player.health = player.maxHealth;
   player.stamina = player.maxStamina;
   player.ammo = WEAPON.mag;
   player.reloading = 0;
   player.alive = true;
-  player.object.rotation.set(0, Math.PI, 0);
+  player.object.rotation.set(0, world.start.yaw, 0);
   player.object.scale.setScalar(1);
   /* Must come AFTER pos and object.rotation above: it plants the feet and
    * re-settles the coat and scarf against the new spawn, and takes the facing
@@ -887,7 +911,7 @@ function startGame() {
    * rig's transient state (facing, cloth, fireCd/meleeCd/dashCd) and it used to
    * carry straight into the next run. */
   player.resetForNewRun();
-  chase.yaw = Math.PI;
+  chase.yaw = world.start.yaw;
   chase.pitch = -0.1;
   chase._first = true;
 
@@ -909,6 +933,15 @@ function startGame() {
 
   hud.toast('BRNO POD ÚTOKEM', 'big');
   hud.toast('Trhliny se otevírají — braň město', 'sub');
+}
+
+function requestStart() {
+  if (!world || !player || !enemies || !hud || state.mode === 'loading') {
+    pendingStart = true;
+    return;
+  }
+  startGame();
+  if (AUTOMATED_WAVE > 0) startWave(AUTOMATED_WAVE);
 }
 
 function pauseGame() {
@@ -970,7 +1003,7 @@ function onDeath() {
   setTimeout(() => goEl.classList.remove('hidden'), 1200);
 }
 
-document.getElementById('btn-play').addEventListener('click', startGame);
+document.getElementById('btn-play').addEventListener('click', requestStart);
 document.getElementById('btn-resume').addEventListener('click', resumeGame);
 document.getElementById('btn-restart').addEventListener('click', startGame);
 document.getElementById('btn-again').addEventListener('click', startGame);
@@ -1028,6 +1061,7 @@ const _tmp3 = new THREE.Vector3();
 /** What the menu backdrop camera orbits around, and what it focuses on. */
 const MENU_LOOK = new THREE.Vector3(-30, 24, 20);
 let smoothFps = 60;
+const qaFpsSamples = [];
 
 function tick() {
   const now = performance.now();
@@ -1035,11 +1069,24 @@ function tick() {
   lastTime = now;
   advance(Math.min(0.05, raw));
   smoothFps += (1 / raw - smoothFps) * 0.05;
+  if (PRODUCTION_RENDER_QA && state.mode === 'playing' && raw < 0.25) {
+    qaFpsSamples.push(1 / raw);
+    if (qaFpsSamples.length > 7200) qaFpsSamples.shift();
+    if (import.meta.env.DEV && qaFpsSamples.length % 30 === 0) {
+      const ordered = [...qaFpsSamples].sort((a, b) => a - b);
+      canvas.dataset.qaMedianFps = ordered[Math.floor(ordered.length / 2)].toFixed(1);
+      canvas.dataset.qaFpsSamples = String(qaFpsSamples.length);
+      canvas.dataset.qaQuality = render?.stats().quality || 'unknown';
+      canvas.dataset.qaPostStack = String(postStackOk);
+      canvas.dataset.qaCalls = String(renderer.info.render.calls);
+      canvas.dataset.qaTriangles = String(renderer.info.render.triangles);
+    }
+  }
 }
 
-function advance(dt) {
+function advance(dt, shouldRender = true) {
   if (!renderer) return;
-  renderer.info.reset();
+  if (shouldRender) renderer.info.reset();
   if (state.mode === 'playing') {
     state.time += dt;
     stepGame(dt);
@@ -1060,6 +1107,10 @@ function advance(dt) {
    * pause / death screens so the overlay text has something soft behind
    * it. Focus tracks whatever the crosshair resolved to, so the target
    * stays sharp and the street behind it goes. */
+  if (!shouldRender) {
+    input.endFrame();
+    return;
+  }
   if (render && postStackOk) {
     if (state.mode === 'playing' && state.aiming) {
       render.setDepthOfField(0.85, camera.position.distanceTo(chase.aimPoint));
@@ -1236,6 +1287,7 @@ function stepGame(dt, frozen = false) {
       player,
       camera,
       findOpenPointNear: (x, z, r) => world.randomOpenPoint(x, z, r, gameplayRng),
+      flowDirection: (x, z, tx, tz) => world.navigationDirection?.(x, z, tx, tz),
     });
     updateWaves(dt);
   }
@@ -1317,6 +1369,84 @@ boot();
  * Debug handle. `advance` lets an automated harness step the whole
  * simulation deterministically (rAF is paused in background tabs).
  * ------------------------------------------------------------------ */
+const advanceTimeForQa = (ms) => {
+  let remaining = Math.max(0, Number(ms) || 0) / 1000;
+  while (remaining > 0) {
+    const dt = Math.min(1 / 60, remaining);
+    remaining -= dt;
+    advance(dt, remaining <= 1e-9);
+  }
+};
+
+const renderGameToText = () => {
+  const p = player?.pos;
+  let currentPlace = null;
+  let nearest = Infinity;
+  if (p) {
+    for (const [key, place] of Object.entries(PLACES)) {
+      const distance = Math.hypot(place.x - p.x, place.z - p.z);
+      if (distance < nearest) { nearest = distance; currentPlace = { key, name: place.name, distance: +distance.toFixed(1) }; }
+    }
+  }
+  const sortedFps = qaFpsSamples.length ? [...qaFpsSamples].sort((a, b) => a - b) : [];
+  const medianFps = sortedFps.length ? sortedFps[Math.floor(sortedFps.length / 2)] : null;
+  return JSON.stringify({
+    coordinateConvention: '+x east, +z south, +y up; metres; origin at Náměstí Svobody',
+    mapSize: world?.metadata?.size || 1500,
+    mode: state.mode,
+    player: p ? {
+      x: +p.x.toFixed(2), y: +p.y.toFixed(2), z: +p.z.toFixed(2),
+      terrainHeight: +(world?.terrain?.heightAt(p.x, p.z) ?? 0).toFixed(2),
+      yaw: +(player.object.rotation.y).toFixed(3),
+      health: Math.round(player.health),
+    } : null,
+    currentPlace,
+    enemies: enemies?.list?.filter((enemy) => enemy.alive).map((enemy) => ({
+      type: enemy.type?.name || enemy.type?.id || 'enemy',
+      x: +enemy.pos.x.toFixed(1), y: +enemy.pos.y.toFixed(1), z: +enemy.pos.z.toFixed(1),
+    })) || [],
+    rifts: rifts.map((rift) => ({
+      x: +rift.pos.x.toFixed(1), y: +rift.pos.y.toFixed(1), z: +rift.pos.z.toFixed(1),
+      health: Math.round(rift.hp ?? rift.health ?? 0),
+    })),
+    objective: {
+      text: state.objective,
+      distance: state.objectiveDist,
+      position: state.objectivePos ? {
+        x: +state.objectivePos.x.toFixed(1),
+        y: +state.objectivePos.y.toFixed(1),
+        z: +state.objectivePos.z.toFixed(1),
+      } : null,
+    },
+    wave: state.wave,
+    city: world?.stats ? {
+      buildings: world.stats.buildings,
+      terrainChunks: world.stats.terrainChunks,
+      cityMeshes: world.stats.cityMeshes ?? world.stats.drawCalls,
+      sceneTriangles: world.stats.sceneTriangles,
+      shadowTriangles: world.stats.shadowTriangles,
+      colliders: world.stats.colliders,
+    } : null,
+    submittedFrame: renderer ? {
+      calls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles,
+    } : null,
+    performance: {
+      productionRendererQa: PRODUCTION_RENDER_QA,
+      quality: render?.stats().quality || null,
+      postStackOk,
+      fpsSamples: qaFpsSamples.length,
+      medianFps: medianFps === null ? null : +medianFps.toFixed(1),
+      smoothFps: Math.round(smoothFps),
+    },
+  });
+};
+
+if (AUTOMATED_QA || import.meta.env.DEV) {
+  window.advanceTime = advanceTimeForQa;
+  window.render_game_to_text = renderGameToText;
+}
+
 window.__brno = {
   THREE,
   state,

@@ -27,30 +27,48 @@ const free = (name, eye, target, fov = 58) => ({ name, kind: 'free', eye, target
 /** Third-person: teleport the player, let the chase camera settle. */
 const follow = (name, at, yaw, opts = {}) => ({ name, kind: 'follow', at, yaw, ...opts });
 
+const place = (key) => g().world.places[key];
+const ground = (key) => {
+  const p = place(key);
+  return g().world.terrain ? g().world.terrain.heightAt(p.x, p.z) : 0;
+};
+const freeAt = (name, key, eyeOffset, targetOffset, fov) => {
+  const p = place(key);
+  const y = ground(key);
+  return free(name,
+    [p.x + eyeOffset[0], y + eyeOffset[1], p.z + eyeOffset[2]],
+    [p.x + targetOffset[0], y + targetOffset[1], p.z + targetOffset[2]],
+    fov);
+};
+const followAt = (name, key, offset, yaw, opts = {}) => {
+  const p = place(key);
+  return follow(name, [p.x + offset[0], ground(key), p.z + offset[1]], yaw, opts);
+};
+
 export const VIEWS = [
   /* --- landmarks: the things that have to read as Brno --- */
-  free('petrov-front', [-104, 30, 262], [-108, 46, 172]),
-  free('petrov-close', [-108, 6, 212], [-108, 34, 178], 64),
-  free('petrov-skyline', [40, 78, 300], [-108, 50, 170], 46),
-  free('spilberk-far', [-140, 46, 130], [-268, 52, 44], 50),
-  free('spilberk-walls', [-268, 26, 116], [-268, 24, 62], 62),
-  free('radnice-tower', [-18, 18, 104], [-18, 28, 46], 58),
-  free('radnice-portal', [-20, 4, 62], [-18, 10, 47], 66),
-  free('svoboda-wide', [14, 14, 62], [0, 10, -12], 58),
-  free('zelny-parnas', [-52, 8, 116], [-52, 7, 78], 60),
-  free('nadrazi', [22, 16, 330], [22, 12, 268], 58),
-  free('moravske', [18, 13, -72], [18, 9, -134], 58),
-  free('janacek', [112, 14, -108], [112, 12, -170], 58),
+  freeAt('petrov-front', 'petrov', [4, 30, 94], [0, 46, 4]),
+  freeAt('petrov-close', 'petrov', [0, 6, 44], [0, 34, 10], 64),
+  freeAt('petrov-skyline', 'petrov', [148, 78, 132], [0, 50, 2], 46),
+  freeAt('spilberk-far', 'spilberk', [128, 46, 86], [0, 52, 0], 50),
+  freeAt('spilberk-walls', 'spilberk', [0, 26, 72], [0, 24, 18], 62),
+  freeAt('radnice-tower', 'radnice', [0, 18, 60], [0, 28, 2], 58),
+  freeAt('radnice-portal', 'radnice', [-2, 4, 18], [0, 10, 3], 66),
+  freeAt('svoboda-wide', 'svoboda', [18, 14, 65], [4, 10, -9], 58),
+  freeAt('zelny-parnas', 'zelnyTrh', [0, 8, 38], [0, 7, 0], 60),
+  freeAt('nadrazi', 'nadrazi', [0, 16, 38], [0, 12, -24], 58),
+  freeAt('moravske', 'moravske', [0, 13, 64], [0, 9, 2], 58),
+  freeAt('janacek', 'janacek', [0, 14, 62], [0, 12, 0], 58),
   free('rooftops', [30, 110, 150], [-70, 24, 60], 44),
 
   /* --- gameplay: what the player actually stares at for an hour --- */
-  follow('street-masarykova', [4, 0, 180], Math.PI),
-  follow('street-ceska', [-66, 0, -96], Math.PI * 0.5),
-  follow('svoboda-ground', [0, 0, 10], Math.PI),
-  follow('petrov-approach', [-108, 0, 206], Math.PI),
-  follow('combat', [0, 0, 10], Math.PI, { enemies: ['whelp', 'whelp', 'spitter', 'golem'] }),
-  follow('combat-fire', [0, 0, 10], Math.PI, { enemies: ['whelp', 'whelp', 'spitter'], fire: true }),
-  follow('boss', [0, 0, 30], Math.PI, { wave: 5 }),
+  followAt('street-masarykova', 'svoboda', [0, 80], Math.PI),
+  followAt('street-ceska', 'ceska', [0, 0], Math.PI * 0.5),
+  followAt('svoboda-ground', 'svoboda', [0, 10], Math.PI),
+  followAt('petrov-approach', 'petrov', [0, 38], Math.PI),
+  followAt('combat', 'svoboda', [0, 10], Math.PI, { enemies: ['whelp', 'whelp', 'spitter', 'golem'] }),
+  followAt('combat-fire', 'svoboda', [0, 10], Math.PI, { enemies: ['whelp', 'whelp', 'spitter'], fire: true }),
+  followAt('boss', 'svoboda', [0, 30], Math.PI, { wave: 5 }),
 ];
 
 /* ---------------- state control ---------------- */

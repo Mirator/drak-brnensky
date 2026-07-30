@@ -1,5 +1,7 @@
 import * as THREE from 'three';
-import { Builder, palette, PROFILE } from './landmarks/detail.js';
+import {
+  Builder, palette, PROFILE, transformLandmarkPoint,
+} from './landmarks/detail.js';
 import * as petrov from './landmarks/petrov.js';
 import * as spilberk from './landmarks/spilberk.js';
 import * as radnice from './landmarks/radnice.js';
@@ -68,12 +70,12 @@ export const LANDMARK_FOOTPRINTS = [
  */
 const LOD_DISTANCE = 150;
 
-export function buildLandmarks(group, collision, { stoneMat, roofMat, rng } = {}) {
+export function buildLandmarks(group, collision, { stoneMat, roofMat, rng, transforms = {} } = {}) {
   const M = palette({ stoneMat, roofMat });
-  const b = new Builder(collision, M);
+  const b = new Builder(collision, M, { transforms });
   const info = {};
   const animated = [];
-  const ctx = { M, info, animated, group, rng, collision };
+  const ctx = { M, info, animated, group, rng, collision, transforms };
 
   petrov.build(b, ctx);
   spilberk.build(b, ctx);
@@ -85,6 +87,19 @@ export function buildLandmarks(group, collision, { stoneMat, roofMat, rng } = {}
   moravske.build(b, ctx);
   nadrazi.build(b, ctx);
   buildCeska(b, ctx);
+
+  const transformInfo = {
+    petrov: 'petrov', spilberk: 'spilberk', radnice: 'radnice',
+    zelnyTrh: 'zelnyTrh', mahen: 'mahen', janacek: 'janacek',
+    moravske: 'moravske', stTomas: 'moravske', mistodrzitelsky: 'moravske',
+    nadrazi: 'nadrazi', ceska: 'ceska',
+  };
+  for (const [key, cluster] of Object.entries(transformInfo)) {
+    const tr = transforms[cluster];
+    if (tr && info[key]?.pos) {
+      transformLandmarkPoint(info[key].pos.x, info[key].pos.y, info[key].pos.z, tr, info[key].pos);
+    }
+  }
 
   const lods = b.finish(group);
 
@@ -153,7 +168,7 @@ export function buildLandmarks(group, collision, { stoneMat, roofMat, rng } = {}
 function buildCeska(b, ctx) {
   const { M, info } = ctx;
   const cx = -66, cz = -96;
-  b.cluster('moravske').tier(0);
+  b.cluster('ceska').tier(0);
   for (const [hx, hz, w, d, eaves] of [[-80, -90, 20, 18, 21], [-54, -100, 18, 16, 25]]) {
     b.box(M.stone, hx, 0, hz, w, eaves, d);
     b.mould(M.stonePale, hx, 0, hz, w + 0.5, d + 0.5, PROFILE.plinth);

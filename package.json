@@ -6,7 +6,8 @@
     "dev": "vite",
     "test": "node --test",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "import:brno": "node scripts/import-brno-map.mjs"
   },
   "keywords": [],
   "author": "",
@@ -16,7 +17,14 @@
     "three": "^0.185.1"
   },
   "devDependencies": {
+    "lerc": "4.2.0",
+    "osmtogeojson": "3.0.0-beta.5",
+    "polygon-clipping": "0.15.7",
+    "proj4": "2.21.0",
     "vite": "^8.1.5"
+  },
+  "overrides": {
+    "@xmldom/xmldom": "0.9.10"
   },
   "type": "module"
 }

@@ -1082,6 +1082,16 @@ export class EnemyManager {
       let moveZ = e.moveZ;
       let speed = e.moveSpeed;
 
+      // Imported Brno has real blocks and courtyards, so grounded chasers use
+      // the shared 4 m flow field instead of steering directly through a block.
+      if (e.state === 'chase' && !e.flying && ctx.flowDirection) {
+        const flow = ctx.flowDirection(e.pos.x, e.pos.z, pp.x, pp.z);
+        if (flow && (flow.x || flow.z)) {
+          moveX = moveX * 0.25 + flow.x * 0.9;
+          moveZ = moveZ * 0.25 + flow.z * 0.9;
+        }
+      }
+
       /* --- obstacle avoidance: probe ahead, veer if blocked (verbatim) --- */
       if (e.state === 'chase' || e.state === 'fly') {
         e.repathT -= dt;

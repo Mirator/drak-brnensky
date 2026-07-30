@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { PROFILE, polyPath } from './detail.js';
+import { BRNO_PLACES } from '../data/brno-layout.js';
 
 /**
  * Náměstí Svobody — the plague column, the "orloj", and the square's frontages.
@@ -31,13 +32,13 @@ import { PROFILE, polyPath } from './detail.js';
  * the orloj that were already there, and neither gained footprint.
  */
 
-export const SITE = { cx: 0, cz: -10 };
+export const SITE = { cx: BRNO_PLACES.svoboda.x, cz: BRNO_PLACES.svoboda.z };
 /** The corroborated height: 20 m to the top of the Marian figure. */
 export const COLUMN_H = 20.0;
-export const COLUMN_AT = [0, 22];
+export const COLUMN_AT = [BRNO_PLACES.column.x, BRNO_PLACES.column.z];
 /** ~6 m, per the dossier. */
 export const ORLOJ_H = 6.0;
-export const ORLOJ_AT = [0, -52];
+export const ORLOJ_AT = [BRNO_PLACES.orloj.x, BRNO_PLACES.orloj.z];
 
 /**
  * Footprints. The column and orloj keep the reservations they already had; the

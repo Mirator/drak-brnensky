@@ -1018,9 +1018,69 @@ const PARTS = {
  *   draw call per cluster. Anything pushed at tier 1 in another material
  *   silently falls back to tier 0.
  */
+const EMPTY_TRANSFORM = { x: 0, y: 0, z: 0 };
+
+export function transformLandmarkPoint(x, y, z, tr = EMPTY_TRANSFORM, out = null) {
+  let tx = x + (tr.x || 0);
+  let tz = z + (tr.z || 0);
+  if (Number.isFinite(tr.originX) && Number.isFinite(tr.originZ)
+      && Number.isFinite(tr.targetX) && Number.isFinite(tr.targetZ)) {
+    const dx = x - tr.originX;
+    const dz = z - tr.originZ;
+    const c = Math.cos(tr.rotation || 0);
+    const s = Math.sin(tr.rotation || 0);
+    tx = tr.targetX + c * dx + s * dz;
+    tz = tr.targetZ - s * dx + c * dz;
+  }
+  const ty = y + (tr.y || 0)
+    + (tr.slopeX || 0) * (tx - (tr.targetX ?? tx))
+    + (tr.slopeZ || 0) * (tz - (tr.targetZ ?? tz));
+  if (out) return out.set(tx, ty, tz);
+  return { x: tx, y: ty, z: tz };
+}
+
+function transformLandmarkGeometry(geo, tr) {
+  if (!tr) return geo;
+  if (Number.isFinite(tr.originX) && Number.isFinite(tr.originZ)
+      && Number.isFinite(tr.targetX) && Number.isFinite(tr.targetZ)) {
+    geo.translate(-tr.originX, 0, -tr.originZ);
+    if (tr.rotation) geo.rotateY(tr.rotation);
+    geo.translate(tr.targetX, 0, tr.targetZ);
+    const p = geo.attributes?.position;
+    if (p) {
+      for (let i = 0; i < p.count; i++) {
+        const x = p.getX(i);
+        const z = p.getZ(i);
+        p.setY(i, p.getY(i) + (tr.y || 0)
+          + (tr.slopeX || 0) * (x - tr.targetX)
+          + (tr.slopeZ || 0) * (z - tr.targetZ));
+      }
+      p.needsUpdate = true;
+    }
+    return geo;
+  }
+  geo.translate(tr.x || 0, tr.y || 0, tr.z || 0);
+  return geo;
+}
+
 export class Builder {
-  constructor(collision, M) {
-    this.collision = collision;
+  constructor(collision, M, { transforms = {} } = {}) {
+    this.realCollision = collision;
+    this.transforms = transforms;
+    // Keep collision and geometry under the same per-landmark translation.
+    this.collision = {
+      add: (x, z, w, d, y, h, tag, surface) => {
+        const tr = this.transforms[this._cluster] || EMPTY_TRANSFORM;
+        const point = transformLandmarkPoint(x, y, z, tr);
+        const c = Math.abs(Math.cos(tr.rotation || 0));
+        const s = Math.abs(Math.sin(tr.rotation || 0));
+        return collision.add(
+          point.x, point.z,
+          w * c + d * s, w * s + d * c,
+          point.y, h, tag, surface,
+        );
+      },
+    };
     this.M = M;
     this.base = new Map();
     this.orn = new Map();
@@ -1056,6 +1116,8 @@ export class Builder {
 
   _push(mat, geo) {
     if (!geo) return geo;
+    const tr = this.transforms[this._cluster];
+    if (tr) transformLandmarkGeometry(geo, tr);
     if (this._tier === 1 && this.ornamentMats.has(mat)) {
       let byMat = this.orn.get(this._cluster);
       if (!byMat) this.orn.set(this._cluster, (byMat = new Map()));

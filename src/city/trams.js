@@ -71,7 +71,7 @@ function carGeometries() {
   };
 }
 
-export function buildTrams(group) {
+export function buildTrams(group, heightAt = null, routes = TRAM_ROUTES) {
   const geos = carGeometries();
   const mats = {
     livery: getMaterial('tramLivery', { seed: 1901 }),
@@ -86,7 +86,7 @@ export function buildTrams(group) {
 
   /* how many cars the whole fleet needs, so the instance count is exact */
   const fleet = [];
-  TRAM_ROUTES.forEach((route, ri) => {
+  routes.forEach((route, ri) => {
     const count = ri === 0 ? 3 : 2;
     for (let i = 0; i < count; i++) fleet.push({ ri, i, count });
   });
@@ -114,7 +114,7 @@ export function buildTrams(group) {
   const trams = [];
   let carSlot = 0;
   fleet.forEach(({ ri, i, count }) => {
-    const route = TRAM_ROUTES[ri];
+    const route = routes[ri];
     const curve = new THREE.CatmullRomCurve3(route.map(([x, z]) => new THREE.Vector3(x, 0, z)));
     curve.curveType = 'catmullrom';
     curve.tension = 0.2;
@@ -142,7 +142,11 @@ export function buildTrams(group) {
         for (let s = 0; s < 2; s++) {
           const off = s * CAR_GAP - CAR_GAP / 2;
           mat4.compose(
-            _tmp.set(pos.x + fx * off, RAIL_Y, pos.z + fz * off),
+            _tmp.set(
+              pos.x + fx * off,
+              RAIL_Y + (heightAt ? heightAt(pos.x + fx * off, pos.z + fz * off) : 0),
+              pos.z + fz * off,
+            ),
             quat, one,
           );
           for (const key of Object.keys(meshes)) meshes[key].setMatrixAt(slots[s], mat4);
