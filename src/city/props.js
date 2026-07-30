@@ -3,7 +3,7 @@ import { Rng } from '../rng.js';
 import { getMaterial } from '../materials.js';
 import { InstanceSet, partsGeometry, label } from './mesh.js';
 import { TIER } from './chunks.js';
-import { instanceVisual } from './breakables.js';
+import { instanceVisual, rebuildableColliders } from './breakables.js';
 import {
   FLAG, ROADS, PLAZAS, PLACES, TRAM_STOPS, segments, offsetPolyline, inCore,
 } from './layout.js';
@@ -425,9 +425,9 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
         const rot = seg.rot + rng.float(-0.3, 0.3);
         const binIndex = sets.bin.push(x, 0.11, z, rot);
         bins++;
-        const box = collision.add(x, z, 0.62, 0.62, 0, 1.1, 'prop', 'metal');
         breakables.add({
-          colliders: [box], chunks: 5, threshold: 24, mass: 14, surface: 'metal',
+          ...rebuildableColliders(collision, [[x, z, 0.62, 0.62, 0, 1.1, 'prop', 'metal']]),
+          chunks: 5, threshold: 24, mass: 14, surface: 'metal',
           seed: 0x81a2 ^ Math.round(x * 41 + z * 13), label: 'litter bin',
           ...instanceVisual([[sets.bin, binIndex]]),
         });
@@ -435,9 +435,9 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
           const nx = x + seg.tx * 1.5, nz = z + seg.tz * 1.5;
           if (clear(nx, nz, 0.5)) {
             const newsIndex = sets.news.push(nx, 0.11, nz, rot);
-            const nb = collision.add(nx, nz, 0.6, 0.5, 0, 0.95, 'prop', 'metal');
             breakables.add({
-              colliders: [nb], chunks: 4, threshold: 20, mass: 11, surface: 'metal',
+              ...rebuildableColliders(collision, [[nx, nz, 0.6, 0.5, 0, 0.95, 'prop', 'metal']]),
+              chunks: 4, threshold: 20, mass: 11, surface: 'metal',
               seed: 0x9b41 ^ Math.round(nx * 29 + nz * 19), label: 'newspaper box',
               ...instanceVisual([[sets.news, newsIndex]]),
             });
@@ -546,11 +546,11 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       if (!clear(x, z, 1.4)) continue;
       const rot = rng.chance(0.5) ? rng.float(-0.2, 0.2) : Math.PI / 2 + rng.float(-0.2, 0.2);
       const benchIndex = sets.bench.push(x, park ? 0 : 0.02, z, rot);
-      const box = collision.add(x, z,
-        Math.abs(Math.cos(rot)) * 2.2 + 0.6, Math.abs(Math.sin(rot)) * 2.2 + 0.6,
-        0, 0.95, 'prop', 'wood');
       breakables.add({
-        colliders: [box], chunks: 6, threshold: 32, mass: 26, surface: 'wood',
+        ...rebuildableColliders(collision, [[x, z,
+          Math.abs(Math.cos(rot)) * 2.2 + 0.6, Math.abs(Math.sin(rot)) * 2.2 + 0.6,
+          0, 0.95, 'prop', 'wood']]),
+        chunks: 6, threshold: 32, mass: 26, surface: 'wood',
         seed: 0x33c1 ^ Math.round(x * 53 + z * 7), label: 'bench',
         ...instanceVisual([[sets.bench, benchIndex]]),
       });
@@ -571,9 +571,9 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
       const z = cz + (edge === 2 ? -d / 2 + 2.2 : edge === 3 ? d / 2 - 2.2 : rng.float(-d / 2 + 3, d / 2 - 3));
       if (!clear(x, z, 1)) continue;
       const planterIndex = sets.planter.push(x, 0.02, z, rng.float(0, 3.1));
-      const box = collision.add(x, z, 1.2, 1.2, 0, 0.75, 'prop', 'stone');
       breakables.add({
-        colliders: [box], chunks: 7, threshold: 70, mass: 120, surface: 'stone',
+        ...rebuildableColliders(collision, [[x, z, 1.2, 1.2, 0, 0.75, 'prop', 'stone']]),
+        chunks: 7, threshold: 70, mass: 120, surface: 'stone',
         seed: 0x71d4 ^ Math.round(x * 17 + z * 61), label: 'planter',
         ...instanceVisual([[sets.planter, planterIndex]]),
       });
@@ -596,9 +596,9 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
           -a + Math.PI / 2 + rng.float(-0.2, 0.2),
         )]);
       }
-      const box = collision.add(x, z, 0.9, 0.9, 0, 0.8, 'prop', 'metal');
       breakables.add({
-        colliders: [box], chunks: 4, threshold: 14, mass: 9, surface: 'metal',
+        ...rebuildableColliders(collision, [[x, z, 0.9, 0.9, 0, 0.8, 'prop', 'metal']]),
+        chunks: 4, threshold: 14, mass: 9, surface: 'metal',
         seed: 0xc0fe ^ Math.round(x * 23 + z * 37), label: 'café table',
         ...instanceVisual(handles),
       });
@@ -617,11 +617,11 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
           [sets.kioskGlass, sets.kioskGlass.push(x, 0.02, z, rot)],
           [sets.kioskSign, sets.kioskSign.push(x, 0.02, z, rot)],
         ];
-        const boxes = [collision.add(x, z,
-          Math.abs(c) * 3.1 + Math.abs(s) * 2.2, Math.abs(s) * 3.1 + Math.abs(c) * 2.2,
-          0, 2.7, 'prop', 'wood')];
         breakables.add({
-          colliders: boxes, chunks: 9, threshold: 90, mass: 180, surface: 'wood',
+          ...rebuildableColliders(collision, [[x, z,
+            Math.abs(c) * 3.1 + Math.abs(s) * 2.2, Math.abs(s) * 3.1 + Math.abs(c) * 2.2,
+            0, 2.7, 'prop', 'wood']]),
+          chunks: 9, threshold: 90, mass: 180, surface: 'wood',
           seed: 0x5ee7 ^ Math.round(x * 11 + z * 71), label: 'kiosk',
           ...instanceVisual(kioskHandles),
         });
@@ -641,11 +641,11 @@ export function buildProps(group, collision, { rng, flagAt, plots, seed, breakab
           [sets.stallWood, sets.stallWood.push(x, 0.02, z, rot)],
           [sets.stallCanopy, sets.stallCanopy.push(x, 0.02, z, rot)],
         ];
-        const boxes = [collision.add(x, z,
-          Math.abs(c) * 2.4 + Math.abs(s) * 1.1, Math.abs(s) * 2.4 + Math.abs(c) * 1.1,
-          0, 1, 'stall', 'wood')];
         breakables.add({
-          colliders: boxes, chunks: 8, threshold: 26, mass: 40, surface: 'wood',
+          ...rebuildableColliders(collision, [[x, z,
+            Math.abs(c) * 2.4 + Math.abs(s) * 1.1, Math.abs(s) * 2.4 + Math.abs(c) * 1.1,
+            0, 1, 'stall', 'wood']]),
+          chunks: 8, threshold: 26, mass: 40, surface: 'wood',
           seed: 0x2b8d ^ Math.round(x * 43 + z * 5), label: 'market stall',
           ...instanceVisual(stallHandles),
         });

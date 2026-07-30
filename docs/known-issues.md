@@ -41,17 +41,7 @@ little as 6 m apart (Masarykova/Rašínova) whose `FLAG.ROAD` bands overlap, so
 interiors. Widening the spacing in `ROADS` would raise it substantially but moves
 the tram routes.
 
-### 5. Props broken in one run stay broken in the next
-
-Restarting re-registers every *intact* prop, but a bench smashed in run 1 is
-still wreckage in run 2: the city is not rebuilt on restart, so its collapsed
-instance is never restored and its collider is never put back. Surfaced while
-fixing the registration bug rather than reported in review, so it is recorded
-rather than fixed. `InstanceSet.show()` and the stored per-instance matrices are
-the hook for the visual half; restoring the colliders needs each descriptor to
-remember its `collision.add` arguments, which is an addition rather than a fix.
-
-### 6. Smaller things, each self-contained
+### 5. Smaller things, each self-contained
 
 - **Roof stripe banding** on the spire roofs follows the tile rows, which reads
   like UV tiling or normal-map scale rather than the (now-fixed) metalness
@@ -168,6 +158,31 @@ Attribution took three rounds: VFX ruled itself out on four independent grounds
 was live), a "shopfront" guess from the opaque view was wrong, and the answer came
 from **measuring the longest triangle edge per mesh keyed by material**. An audit
 then found two more of the same class in the Janáček foyer glazing and basin.
+
+### Breakable props: never armed, then never restored
+
+Three bugs in one seam, all reported in review. `buildCity()` probed
+`collision.rigid` / `.rigidBody` / `.physics`, which `main.js` never sets, so
+nothing was ever registered. Registering at boot would not have been enough
+either: `startGame()` calls `physics.clear()`, which empties
+`physics.breakables`, and the registry's `registered === world` memo then refused
+to re-register — so the first run permanently disarmed every prop in the city.
+Separately, descriptors carried collider and fracture data only, so a prop that
+did break left its intact mesh standing beside its own debris.
+
+The fix that is easy to get wrong: **restoring a prop and re-registering it must
+be different operations.** The memo, and the rule that a broken descriptor is
+skipped, are what stop wreckage shedding a second set of chunks. Only a restart
+is entitled to bring props back, so `restore()` is separate from `reregister()`
+and `main.js` calls it from exactly one place. Restoring a collider also has to
+create a *fresh* box and replace the entry in the descriptor's array — the
+original is gone from the grid, and handing `registerBreakable` a stale box makes
+it derive the prop's centre and radius from something the world no longer knows
+about.
+
+Verified in the browser across three run cycles: 210 breakables / 2,956
+colliders, down to 206 / 2,952 after smashing three props, and back to
+210 / 2,956 on the next run with no drift on the run after that.
 
 ### Materials that were physically wrong
 

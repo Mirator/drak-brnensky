@@ -6,7 +6,8 @@ import { generatePlots, rotRectHitsRect } from '../src/city/blocks.js';
 import { FALLBACK_FOOTPRINTS, GN } from '../src/city/layout.js';
 import * as landmarksModule from '../src/landmarks.js';
 import * as THREE from 'three';
-import { createBreakables, instanceVisual } from '../src/city/breakables.js';
+import { createBreakables, instanceVisual, rebuildableColliders } from '../src/city/breakables.js';
+import { CollisionWorld } from '../src/physics.js';
 import { InstanceSet } from '../src/city/mesh.js';
 
 test('flag grid stores only exact classifications at shape borders', () => {
@@ -143,9 +144,12 @@ test('the flag grid is identical across two identical paint sequences', () => {
  * `registerBreakable`, `clear` (which is what throws boot registrations
  * away) and enough of `breakProp` to fire the descriptor's onBreak.
  */
-function fakePhysicsWorld() {
+function fakePhysicsWorld(collision = null) {
   const world = {
+    collision,
     breakables: [],
+    /** how many times chunks have been shed, for the break-once assertions */
+    chunkSpawns: 0,
     registerBreakable(opts) {
       const prop = { ...opts, broken: false };
       world.breakables.push(prop);
@@ -154,9 +158,17 @@ function fakePhysicsWorld() {
     clear() {
       world.breakables.length = 0;
     },
+    /* same order of business as PhysicsWorld.breakProp: refuse a second
+     * break, drop the static collider out of the grid, empty the prop's own
+     * collider list, spawn chunks, then notify. */
     breakProp(prop) {
+      if (prop.broken) return [];
       prop.broken = true;
+      if (collision) collision.removeAll(prop.colliders);
+      prop.colliders.length = 0;
+      world.chunkSpawns++;
       if (prop.onBreak) prop.onBreak(prop, []);
+      return [{}];
     },
   };
   return world;
@@ -256,4 +268,140 @@ test('breaking a prop collapses its instanced visual', () => {
   // show() puts it back, for whoever wants to restore a fresh city
   assert.equal(set.show(indices[1]), true);
   assert.ok(scaleOf(1) > 0);
+});
+
+/* ------------------------------------------------------------------ */
+/* restoring a broken city                                             */
+/* ------------------------------------------------------------------ */
+
+/** A bench: real CollisionWorld box, real InstancedMesh, real descriptor. */
+function benchFixture() {
+  const collision = new CollisionWorld();
+  const set = new InstanceSet(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+  const index = set.push(12, 0, 34, 0.5);
+  const mesh = set.finish(new THREE.Group());
+  const registry = createBreakables();
+  const desc = registry.add({
+    ...rebuildableColliders(collision, [[12, 34, 2.8, 1.2, 0, 0.95, 'prop', 'wood']]),
+    chunks: 6, threshold: 32, mass: 26, surface: 'wood', seed: 7, label: 'bench',
+    ...instanceVisual([[set, index]]),
+  });
+  const original = new THREE.Matrix4();
+  mesh.getMatrixAt(index, original);
+  return {
+    collision, set, mesh, index, registry, desc, original,
+    /** boxes the spatial grid actually returns over the bench's footprint */
+    inGrid: () => collision.query(11, 33, 13, 35),
+    scale: () => {
+      const m = new THREE.Matrix4();
+      mesh.getMatrixAt(index, m);
+      return new THREE.Vector3().setFromMatrixScale(m).length();
+    },
+    matrix: () => {
+      const m = new THREE.Matrix4();
+      mesh.getMatrixAt(index, m);
+      return m;
+    },
+  };
+}
+
+test('restore() puts a broken prop back in the collision grid and on screen', () => {
+  const f = benchFixture();
+  const world = fakePhysicsWorld(f.collision);
+
+  assert.equal(f.inGrid().length, 1);
+  assert.ok(f.scale() > 0);
+  assert.equal(f.registry.register(world), 1);
+
+  world.breakProp(world.breakables[0]);
+  // gone from the grid, gone from the screen, latched as broken
+  assert.equal(f.inGrid().length, 0);
+  assert.equal(f.scale(), 0);
+  assert.equal(f.desc.broken, true);
+  assert.equal(f.registry.intact, 0);
+
+  assert.equal(f.registry.restore(), 1);
+
+  // back in the grid — asserted against the grid, not just the array
+  const back = f.inGrid();
+  assert.equal(back.length, 1);
+  assert.equal(back[0].tag, 'prop');
+  assert.equal(back[0].surface.id, 'wood');
+  assert.equal(f.collision.isSolidAt(12, 0.5, 34), true);
+  // the descriptor points at the box that is actually in the world now
+  assert.equal(f.desc.colliders.length, 1);
+  assert.equal(f.desc.colliders[0], back[0]);
+  // visual back at exactly its original matrix
+  assert.ok(f.scale() > 0);
+  assert.deepEqual([...f.matrix().elements], [...f.original.elements]);
+  assert.equal(f.desc.broken, false);
+  assert.equal(f.registry.intact, 1);
+  // and restoring cleared the memo, so a plain register() takes effect
+  assert.equal(f.registry.register(world), 1);
+});
+
+test('a restored prop is breakable again, and sheds chunks exactly once', () => {
+  const f = benchFixture();
+  const world = fakePhysicsWorld(f.collision);
+  f.registry.register(world);
+
+  world.breakProp(world.breakables[0]);
+  assert.equal(world.chunkSpawns, 1);
+  // a second hit on the same wreckage must not spawn a second set
+  world.breakProp(world.breakables[0]);
+  assert.equal(world.chunkSpawns, 1);
+
+  // restart: pristine city, handed to the world again
+  assert.equal(f.registry.restore(), 1);
+  world.clear();
+  assert.equal(f.registry.register(world, { force: true }), 1);
+  assert.equal(world.breakables.length, 1);
+
+  world.breakProp(world.breakables[0]);
+  assert.equal(world.chunkSpawns, 2);
+  assert.equal(f.inGrid().length, 0);
+  assert.equal(f.scale(), 0);
+  world.breakProp(world.breakables[0]);
+  assert.equal(world.chunkSpawns, 2);
+});
+
+test('restore() is a no-op when nothing is broken, and is safe to repeat', () => {
+  const collision = new CollisionWorld();
+  const registry = createBreakables();
+  for (let i = 0; i < 2; i++) {
+    registry.add({
+      ...rebuildableColliders(collision, [[i * 10, 0, 1, 1, 0, 1, 'prop', 'wood']]),
+      surface: 'wood', label: 'bench',
+    });
+  }
+  assert.equal(registry.restore(), 0);
+  assert.equal(registry.restore(), 0);
+  assert.equal(collision.boxes.length, 2);
+
+  // after a break and a restore, a further restore is also a no-op
+  const world = fakePhysicsWorld(collision);
+  registry.register(world);
+  world.breakProp(world.breakables[0]);
+  assert.equal(registry.restore(), 1);
+  assert.equal(registry.restore(), 0);
+  assert.equal(collision.boxes.length, 2);
+});
+
+test('reregister() still refuses to resurrect, restore() is the only way back', () => {
+  const f = benchFixture();
+  const world = fakePhysicsWorld(f.collision);
+  f.registry.register(world);
+  world.breakProp(world.breakables[0]);
+  world.clear();
+
+  // the deliberate protection: a re-registration alone leaves it broken
+  assert.equal(f.registry.reregister(world), 0);
+  assert.equal(world.breakables.length, 0);
+  assert.equal(f.desc.broken, true);
+  assert.equal(f.scale(), 0);
+
+  // only the explicit restore brings it back
+  assert.equal(f.registry.restore(), 1);
+  assert.equal(f.registry.reregister(world), 1);
+  assert.ok(f.scale() > 0);
 });

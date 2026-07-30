@@ -532,16 +532,32 @@ function verifyPostStack() {
  * probe never finds anything and this call is the only route.
  */
 function registerCityBreakables() {
+  if (!world || typeof world.registerBreakables !== 'function') return 0;
+  return world.registerBreakables(physics) || 0;
+}
+
+/**
+ * Put the city's props back and re-arm them for a new run.
+ *
+ * `restoreBreakables` un-breaks anything smashed in the previous run — the
+ * collider goes back into the grid and the collapsed instance is shown again —
+ * and then force-registers, defeating the city module's already-registered memo.
+ *
+ * Restore has to be separate from plain re-registration: the memo, and the rule
+ * that a broken descriptor is skipped, are what stop wreckage shedding a second
+ * set of chunks if anything re-registers mid-run. Only a restart is entitled to
+ * bring props back, and this is the only call site that does.
+ */
+function restoreCityBreakables() {
   if (!world) return 0;
-  /* `reregisterBreakables` defeats the city module's already-registered memo,
-   * which exists to absorb accidental double calls. Every call from here is a
-   * deliberate rebuild after a clear(), so force is always what we want — and
-   * using the plain path would silently no-op from the second run onwards. */
+  if (typeof world.restoreBreakables === 'function') {
+    const r = world.restoreBreakables(physics);
+    return (r && r.registered) || 0;
+  }
+  /* Older city module without the restore path: at least re-arm the intact
+   * props rather than leaving the whole registry empty after clear(). */
   if (typeof world.reregisterBreakables === 'function') {
     return world.reregisterBreakables(physics) || 0;
-  }
-  if (typeof world.registerBreakables === 'function') {
-    return world.registerBreakables(physics, { force: true }) || 0;
   }
   return 0;
 }
@@ -846,9 +862,11 @@ function startGame() {
    * go the same way. */
   if (vfx.clearWorldFx) vfx.clearWorldFx();
   physics.clear();
-  /* clear() wipes physics.breakables along with the bodies, so the static prop
-   * registry has to be rebuilt for this run or nothing in the city can break. */
-  registerCityBreakables();
+  /* clear() wipes physics.breakables along with the bodies, so the registry has
+   * to be rebuilt or nothing in the city can break. This also restores props
+   * smashed in the previous run — without it the world degraded permanently,
+   * losing a bench and its collider on every run it was destroyed in. */
+  restoreCityBreakables();
   playerRagdoll = null;
   state.hurtDir = null;
   state.objectivePos = null;

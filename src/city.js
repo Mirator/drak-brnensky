@@ -212,6 +212,19 @@ export function buildCity(scene, collision, rngSeed = 20250726) {
       return breakables.register(rigidWorld, opts);
     },
     /**
+     * Start a run from a pristine city: put every broken prop back — collider
+     * re-added, instance shown, `broken` cleared — then hand the whole set to
+     * the rigid-body world again. This is the one to call from `startGame()`;
+     * without it the world degrades run over run, because the city itself is
+     * only built once.
+     *
+     * @returns {{restored: number, registered: number}}
+     */
+    restoreBreakables(rigidWorld) {
+      const restored = breakables.restore();
+      return { restored, registered: breakables.register(rigidWorld, { force: true }) };
+    },
+    /**
      * Re-register after a rigid-body world has been cleared.
      *
      * `PhysicsWorld.clear()` empties its own breakables list, so the

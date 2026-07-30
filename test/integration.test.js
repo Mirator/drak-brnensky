@@ -20,15 +20,24 @@ import assert from 'node:assert/strict';
 import * as THREE from 'three';
 import { CollisionWorld } from '../src/physics.js';
 import { PhysicsWorld } from '../src/rigidbody.js';
-import { createBreakables, instanceVisual } from '../src/city/breakables.js';
+import { createBreakables, instanceVisual, rebuildableColliders } from '../src/city/breakables.js';
 import { InstanceSet } from '../src/city/mesh.js';
 
-/** A bench-like prop: a real collider, a real instanced visual, real descriptor. */
+/**
+ * A bench-like prop, built the way `src/city/props.js` builds one: the collider
+ * goes through `rebuildableColliders` so the descriptor remembers the
+ * `collision.add` arguments and `restore()` can recreate it. Adding the box
+ * directly would still register and still break, but would silently not be
+ * restorable — which is exactly the shape of bug these tests exist to catch.
+ */
 function benchAt(collision, registry, set, x, z) {
-  const box = collision.add(x, z, 2.2, 0.8, 0, 0.95, 'prop', 'wood');
+  const { colliders, rebuild } = rebuildableColliders(collision, [
+    [x, z, 2.2, 0.8, 0, 0.95, 'prop', 'wood'],
+  ]);
   const index = set.push(x, 0, z);
   const desc = registry.add({
-    colliders: [box],
+    colliders,
+    rebuild,
     chunks: 6,
     threshold: 32,
     mass: 26,
@@ -37,7 +46,7 @@ function benchAt(collision, registry, set, x, z) {
     label: 'bench',
     ...instanceVisual([[set, index]]),
   });
-  return { box, index, desc };
+  return { box: colliders[0], index, desc };
 }
 
 function scaleLengthAt(mesh, i) {
@@ -159,6 +168,75 @@ test('an already-smashed prop is not resurrected by a re-registration', () => {
     physics.bodies.length, bodiesAfterBreak,
     'no second helping of debris from a prop that is already wreckage',
   );
+});
+
+test('a restart puts a prop smashed in the previous run back, solid and breakable', () => {
+  const collision = new CollisionWorld();
+  const physics = new PhysicsWorld(collision);
+  const registry = createBreakables();
+  const set = new InstanceSet(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+
+  const bench = benchAt(collision, registry, set, 24, -8);
+  const mesh = set.finish(new THREE.Group());
+  const collidersIntact = collision.boxes.length;
+
+  registry.register(physics);
+  physics.reportImpact({ x: 24, y: 0.5, z: -8 }, 400, { x: 1, y: 0, z: 0 });
+  assert.equal(bench.desc.broken, true, 'smashed during run 1');
+  assert.equal(scaleLengthAt(mesh, bench.index), 0, 'and collapsed');
+  assert.ok(collision.boxes.length < collidersIntact, 'its collider left the grid');
+
+  /* Exactly what startGame() does on the next run. */
+  physics.clear();
+  const restored = registry.restore();
+  const registered = registry.register(physics, { force: true });
+
+  assert.equal(restored, 1, 'the restart restored it');
+  assert.equal(registered, 1, 'and re-armed it');
+  assert.equal(bench.desc.broken, false, 'no longer flagged broken');
+  assert.equal(
+    collision.boxes.length, collidersIntact,
+    'collider count is back where it started — no leak, no double-add',
+  );
+  assert.ok(scaleLengthAt(mesh, bench.index) > 0, 'and it is visible again');
+
+  /* The collider in the descriptor must be the fresh one that is actually in
+   * the grid, or registerBreakable would derive centre and radius from a box
+   * the world no longer knows about. */
+  assert.ok(
+    collision.boxes.includes(bench.desc.colliders[0]),
+    'the descriptor points at the live box',
+  );
+
+  // and it breaks again on the new run, shedding chunks a second time
+  const bodiesBefore = physics.bodies.length;
+  physics.reportImpact({ x: 24, y: 0.5, z: -8 }, 400, { x: 1, y: 0, z: 0 });
+  assert.equal(bench.desc.broken, true, 'breakable again after the restart');
+  assert.ok(physics.bodies.length > bodiesBefore, 'and sheds chunks again');
+});
+
+test('restore is the only route back — re-registration alone never resurrects', () => {
+  const collision = new CollisionWorld();
+  const physics = new PhysicsWorld(collision);
+  const registry = createBreakables();
+  const set = new InstanceSet(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+
+  const bench = benchAt(collision, registry, set, -60, 4);
+  const mesh = set.finish(new THREE.Group());
+
+  registry.register(physics);
+  physics.reportImpact({ x: -60, y: 0.5, z: 4 }, 400, { x: 1, y: 0, z: 0 });
+  assert.equal(bench.desc.broken, true);
+
+  // mid-run re-registration must leave wreckage as wreckage
+  assert.equal(registry.reregister(physics), 0);
+  assert.equal(bench.desc.broken, true, 'still broken');
+  assert.equal(scaleLengthAt(mesh, bench.index), 0, 'still invisible');
+
+  // only restore brings it back
+  assert.equal(registry.restore(), 1);
+  assert.equal(bench.desc.broken, false);
+  assert.ok(scaleLengthAt(mesh, bench.index) > 0);
 });
 
 test('the dynamic world advances a body whenever step() is called', () => {

@@ -42,6 +42,28 @@ export function instanceVisual(handles) {
   };
 }
 
+/**
+ * Add a prop's static collider(s) and remember how to recreate them.
+ *
+ * `breakProp()` removes the boxes from the collision grid and there is no
+ * un-remove — the objects the descriptor is holding are, from that moment,
+ * detached from the world. So the *arguments* are kept rather than the boxes:
+ * `restore()` re-adds them and swaps the fresh boxes into the descriptor's
+ * `colliders` array in place. Without that swap the next registration would
+ * hand `registerBreakable` a stale box and derive the prop's centre and
+ * radius from something no longer in the world.
+ *
+ * `specs` is a list of `collision.add()` argument tuples:
+ * `[x, z, w, d, y0, h, tag, surface]`. Tag and surface travel with them, so a
+ * restored prop keeps its footstep and impact classification.
+ */
+export function rebuildableColliders(collision, specs) {
+  return {
+    colliders: specs.map((args) => collision.add(...args)),
+    rebuild: { collision, specs },
+  };
+}
+
 export function createBreakables() {
   const pending = [];
   let registered = null;
@@ -98,8 +120,10 @@ export function createBreakables() {
       for (const desc of pending) {
         if (desc.broken) continue;
         try {
-          const { label, onBreak, ...opts } = desc;
+          const { label, onBreak, rebuild, broken, ...opts } = desc;
           void label;
+          void rebuild;
+          void broken;
           /* Mark the descriptor broken whatever else the prop's own onBreak
            * does, so a later re-registration cannot resurrect it. */
           opts.onBreak = (prop, bodies) => {
@@ -121,9 +145,50 @@ export function createBreakables() {
      * Re-register after a world has been cleared — exactly
      * `register(world, { force: true })`. Call it straight after
      * `PhysicsWorld.clear()`.
+     *
+     * Deliberately does **not** un-break anything: skipping props that are
+     * already debris is what stops wreckage shedding a second set of chunks.
+     * Use `restore()` for that, as a separate, explicit step.
      */
     reregister(world) {
       return api.register(world, { force: true });
+    },
+
+    /**
+     * Put every broken prop back: static collider re-added to the collision
+     * grid, instanced visual shown again at its original matrix, `broken`
+     * cleared. Returns how many were restored.
+     *
+     * This is what makes a new run start from a pristine city rather than
+     * inheriting the last run's wreckage. It is separate from `reregister()`
+     * on purpose — restoring is a decision about starting over, whereas
+     * re-registering is about a world that has forgotten what it was told.
+     *
+     * Idempotent: with nothing broken it does no work and returns 0.
+     */
+    restore() {
+      let n = 0;
+      for (const desc of pending) {
+        if (!desc.broken) continue;
+        const rb = desc.rebuild;
+        if (rb && rb.collision && Array.isArray(rb.specs) && Array.isArray(desc.colliders)) {
+          // fresh boxes, swapped into the same array the descriptor exposes
+          const fresh = rb.specs.map((args) => rb.collision.add(...args));
+          desc.colliders.length = 0;
+          for (const box of fresh) desc.colliders.push(box);
+        }
+        const instances = desc.userData && desc.userData.instances;
+        if (Array.isArray(instances)) {
+          for (const [set, index] of instances) {
+            if (set && typeof set.show === 'function') set.show(index);
+          }
+        }
+        desc.broken = false;
+        n++;
+      }
+      // anything restored has to be handed to the world again
+      if (n) registered = null;
+      return n;
     },
   };
 
