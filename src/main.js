@@ -532,8 +532,18 @@ function verifyPostStack() {
  * probe never finds anything and this call is the only route.
  */
 function registerCityBreakables() {
-  if (!world || typeof world.registerBreakables !== 'function') return 0;
-  return world.registerBreakables(physics) || 0;
+  if (!world) return 0;
+  /* `reregisterBreakables` defeats the city module's already-registered memo,
+   * which exists to absorb accidental double calls. Every call from here is a
+   * deliberate rebuild after a clear(), so force is always what we want — and
+   * using the plain path would silently no-op from the second run onwards. */
+  if (typeof world.reregisterBreakables === 'function') {
+    return world.reregisterBreakables(physics) || 0;
+  }
+  if (typeof world.registerBreakables === 'function') {
+    return world.registerBreakables(physics, { force: true }) || 0;
+  }
+  return 0;
 }
 
 /** Is the frame currently on the canvas essentially empty? Cheap centre sample. */

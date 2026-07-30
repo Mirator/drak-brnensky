@@ -41,7 +41,17 @@ little as 6 m apart (Masarykova/Rašínova) whose `FLAG.ROAD` bands overlap, so
 interiors. Widening the spacing in `ROADS` would raise it substantially but moves
 the tram routes.
 
-### 5. Smaller things, each self-contained
+### 5. Props broken in one run stay broken in the next
+
+Restarting re-registers every *intact* prop, but a bench smashed in run 1 is
+still wreckage in run 2: the city is not rebuilt on restart, so its collapsed
+instance is never restored and its collider is never put back. Surfaced while
+fixing the registration bug rather than reported in review, so it is recorded
+rather than fixed. `InstanceSet.show()` and the stored per-instance matrices are
+the hook for the visual half; restoring the colliders needs each descriptor to
+remember its `collision.add` arguments, which is an addition rather than a fix.
+
+### 6. Smaller things, each self-contained
 
 - **Roof stripe banding** on the spire roofs follows the tile rows, which reads
   like UV tiling or normal-map scale rather than the (now-fixed) metalness
