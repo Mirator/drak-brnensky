@@ -599,7 +599,15 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
         ownEnvMap: 0,
         envMapNull: 0,
         envMapUndefined: 0,
-        fullyMetallic: 0,
+        /* Split deliberately. The earlier single `fullyMetallic` counter read
+         * the *scalar* metalness and reported 75 of 118, which is a false
+         * alarm: `metalness: 1` with a packed ORM map is the correct pattern,
+         * because the map's blue channel modulates it (measured B = 0 for
+         * every dielectric ground material). Only a scalar of 1 with NO map
+         * actually collapses the diffuse term, so that is the number worth
+         * looking at; the mapped ones are reported separately as context. */
+        fullyMetallicNoMap: 0,
+        metalnessScalarOneWithMap: 0,
         envMapIntensity: { min: Infinity, max: -Infinity },
       };
       const seen = new Set();
@@ -614,7 +622,10 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
           if (m.envMap === null) census.envMapNull++;
           else if (m.envMap === undefined) census.envMapUndefined++;
           else census.ownEnvMap++;
-          if (m.metalness >= 0.999) census.fullyMetallic++;
+          if (m.metalness >= 0.999) {
+            if (m.metalnessMap) census.metalnessScalarOneWithMap++;
+            else census.fullyMetallicNoMap++;
+          }
           if (m.envMapIntensity !== undefined) {
             census.envMapIntensity.min = Math.min(census.envMapIntensity.min, m.envMapIntensity);
             census.envMapIntensity.max = Math.max(census.envMapIntensity.max, m.envMapIntensity);

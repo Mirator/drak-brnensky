@@ -65,29 +65,45 @@ const LAMP_LIGHT_RANGE = 26;
 export function createLighting(scene, camera, {
   shadowMapSize = SHADOW_PRESETS.high,
   sunIntensity = 2.9,
+  /* The IBL level. Owned here rather than at the call site because it is
+   * part of the light ratio, not a property of the bake — and because
+   * three only honours scene.environmentIntensity for materials whose
+   * `envMap === null` (WebGLRenderer ~2696), which makes it the *only*
+   * usable IBL knob: it overwrites each material's own envMapIntensity. */
+  envIntensity = 2.2,
 } = {}) {
   /* ---------------- dusk light ratio ----------------
-   * The baseline was muddy because the hemisphere light was doing most
-   * of the work (0.55) and the only directional fill was a single weak
-   * blue lamp, so a wall facing away from the sun had nothing but a flat
-   * ambient floor on it. Now: a strong warm sun, a *cool* sky fill from
-   * the anti-sun side that actually models the wide dusk sky, a low warm
-   * bounce standing in for cobble/plaster reflection, and a hemisphere
-   * light pulled right back because scene.environment (IBL) now supplies
-   * the ambient term properly. */
+   * Measured, not guessed. `render.envDiagnostics()` on the shipped build
+   * reported a shaded-facade patch at 0.0638 HDR luminance of which IBL was
+   * only 0.0078 — about 12% — with the rest coming from analytic fill. The
+   * cause was the sky dome's Rayleigh exponent (see sky.js): the bake was a
+   * thin bright ring at the horizon with a near-black dome above it, so
+   * there was almost no sky irradiance for the IBL to deliver and the
+   * hemisphere and skyFill lights were faking it with flat grey.
+   *
+   * With the dome fixed, the analytic fills come down and the environment
+   * does that work instead — which is the whole point, because a shadowed
+   * wall should be lit by a *directional gradient* of sky, not by a
+   * constant. hemi and skyFill are now closer to a nudge than a light
+   * source; the bounce stays because nothing in an env map captured from
+   * the sky knows about warm light coming back off the cobbles. */
 
-  const hemi = new THREE.HemisphereLight(0x6f8dc4, 0x2a2118, 0.26);
+  const hemi = new THREE.HemisphereLight(0x6f8dc4, 0x2a2118, 0.17);
   scene.add(hemi);
 
   // cool sky fill, from the opposite azimuth and higher up
-  const skyFill = new THREE.DirectionalLight(0x6d8ecb, 0.38);
+  const skyFill = new THREE.DirectionalLight(0x6d8ecb, 0.28);
   skyFill.position.set(-SUN_DIR.x * 0.7, 0.85, -SUN_DIR.z * 0.7).normalize().multiplyScalar(100);
   scene.add(skyFill);
 
   // warm ground bounce, almost horizontal, from the sun side
-  const bounce = new THREE.DirectionalLight(0xffa066, 0.17);
+  const bounce = new THREE.DirectionalLight(0xffa066, 0.16);
   bounce.position.set(SUN_DIR.x * 0.9, -0.35, SUN_DIR.z * 0.9).normalize().multiplyScalar(100);
   scene.add(bounce);
+
+  /* main.js sets this from the bake's own default; override it here so the
+   * whole ratio lives in one place. */
+  scene.environmentIntensity = envIntensity;
 
   /* ---------------- sun: cascades or a single snapped light ---------------- */
   const sunColor = new THREE.Color(0xffb570);
@@ -341,6 +357,17 @@ export function createLighting(scene, camera, {
     get cascades() { return csm ? csm.cascades : 1; },
     /** Refresh the outermost cascade every Nth frame. 1 = every frame. */
     shadowStagger: 2,
+
+    /**
+     * The IBL level. This is the only knob that works: three overwrites each
+     * material's `envMapIntensity` with `scene.environmentIntensity` for any
+     * material with `envMap === null`, so per-material values are ignored.
+     */
+    get envIntensity() { return scene.environmentIntensity; },
+    setEnvIntensity(value) {
+      scene.environmentIntensity = Math.max(0, value);
+      return scene.environmentIntensity;
+    },
 
     registerMaterials,
 

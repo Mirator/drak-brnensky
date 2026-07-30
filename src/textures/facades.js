@@ -8,8 +8,15 @@ import { drawSign, CZECH_SIGNS } from './signage.js';
 /* ------------------------------------------------------------------ */
 /* facades — one tile == one window bay (BAY_W x FLOOR_H metres)        */
 /* ------------------------------------------------------------------ */
-export const BAY_W = 3.4;
-export const FLOOR_H = 3.6;
+// Bay module this generator's window geometry is designed against (see the
+// 'plain' window fractions below). Central-European historicist bay
+// spacing runs 2.6-3.6 m, most commonly ~3.0; typical upper-floor height
+// runs 3.0-3.4 m (docs/brno-reference.md, "Addendum: townhouse
+// proportions") -- 3.1 / 3.4 sits inside both ranges. Any caller sizing a
+// bay mesh in world space must use *these* metres per tile, not a locally
+// guessed module, or the window will drift off its portrait ratio again.
+export const BAY_W = 3.1;
+export const FLOOR_H = 3.4;
 
 /* Brno old-town plaster palette — must stay exactly 6 entries: city.js
  * picks a style with a hardcoded `rng.int(0, 5)` so the array length is
@@ -38,9 +45,22 @@ const H_CRACK = 96;
  * 'attic' (dormer / low band). Height canvas is co-drawn with the albedo
  * so a normal map and cavity AO can be derived from real relief rather
  * than painted-on shading.
+ *
+ * `size` is the base canvas resolution (still run through `tierSize()`, so
+ * `setResolutionTier()` keeps scaling it down further on low quality tiers
+ * on top of whatever base a caller picks here). Defaults to 128, not 256 --
+ * measured on the live boot path, 18 facade-bay materials at 256 cost
+ * ~2.1 s of city-generation time (~115 ms each: two dual() passes plus
+ * heightToNormal's Sobel filter plus aoFromHeight's two blur/upsample
+ * passes, all O(w*h) full-canvas walks). Facade bays are seen at a
+ * distance across most of a frame and the relief comes from the derived
+ * normal/AO maps, not raw texel count, so 128 reads as very close to
+ * indistinguishable from 256 in play for the ~4x cost cut. Pass
+ * `size: 256` (or higher) explicitly for a hero/close-inspection facade
+ * where it's worth paying for.
  */
-export function paintFacadeBay(style, { seed = 7, kind = 'plain', signText = null } = {}) {
-  const S = tierSize(256);
+export function paintFacadeBay(style, { seed = 7, kind = 'plain', signText = null, size = 128 } = {}) {
+  const S = tierSize(size);
   const rngNoise = new Rng(seed * 13 + 1);
   const mottle = makeFbm(rngNoise, { cells: 3, octaves: 3, gain: 0.55 });
   const cracks = makeWorley(rngNoise, 4);
@@ -93,8 +113,15 @@ export function paintFacadeBay(style, { seed = 7, kind = 'plain', signText = nul
     ctx.fillStyle = f(trim, H_CORNICE - 10);
     ctx.fillRect(0, S * 0.02, S, S * 0.02);
 
-    // window geometry, shaped by bay kind
-    let wx = S * 0.235, wy = S * 0.17, ww = S * 0.53, wh = S * 0.6;
+    // window geometry, shaped by bay kind. The 'plain' base fractions
+    // (ww=0.40, wh=0.62) are sized against BAY_W x FLOOR_H = 3.1 x 3.4 m:
+    // 0.40*3.1 = 1.24 m wide, 0.62*3.4 = 2.11 m tall, a 1:1.70 portrait
+    // window -- inside the 1.1-1.4 m x 1.8-2.4 m opening docs/brno-
+    // reference.md specifies, and matching its "never square" note (the
+    // previous 0.53 x 0.60 fractions gave a near-square 1:1.13 window on
+    // every plain upper floor, the majority of every facade). Centred
+    // horizontally (wx = (1 - ww) / 2) as before.
+    let wx = S * 0.30, wy = S * 0.17, ww = S * 0.40, wh = S * 0.62;
     if (kind === 'shopfront') { wx = S * 0.10; wy = S * 0.34; ww = S * 0.8; wh = S * 0.46; }
     if (kind === 'pianoNobile') { wy = S * 0.10; wh = S * 0.72; }
     if (kind === 'attic') { wx = S * 0.30; wy = S * 0.30; ww = S * 0.4; wh = S * 0.42; }
@@ -234,7 +261,9 @@ export function paintFacadeBay(style, { seed = 7, kind = 'plain', signText = nul
   const ectx = e.getContext('2d');
   ectx.fillStyle = '#000';
   ectx.fillRect(0, 0, S, S);
-  let wx = S * 0.235, wy = S * 0.17, ww = S * 0.53, wh = S * 0.6;
+  // must stay pixel-identical to the window geometry in draw() above, or
+  // the emissive glow mask drifts off the actual glass.
+  let wx = S * 0.30, wy = S * 0.17, ww = S * 0.40, wh = S * 0.62;
   if (kind === 'shopfront') { wx = S * 0.10; wy = S * 0.34; ww = S * 0.8; wh = S * 0.46; }
   if (kind === 'pianoNobile') { wy = S * 0.10; wh = S * 0.72; }
   if (kind === 'attic') { wx = S * 0.30; wy = S * 0.30; ww = S * 0.4; wh = S * 0.42; }

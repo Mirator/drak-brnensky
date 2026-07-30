@@ -129,13 +129,32 @@ export function buildEnvironment(renderer, sky, { resolution = 256, intensity = 
    * Texture with the right mapping" is not evidence that it contains
    * anything — a correctly-configured but black env map contributes exactly
    * zero and is indistinguishable from IBL being switched off. Measure it. */
+  /* All six faces, because the *distribution* is the thing that matters:
+   * a bright horizon ring with a black dome above it gives rim light and no
+   * ambient fill, and reading two faces cannot tell you that.
+   * Cube face order is +X, -X, +Y, -Y, +Z, -Z. */
+  const FACES = ['+X', '-X', '+Y(up)', '-Y(down)', '+Z', '-Z'];
+  /* Whole faces, not centre patches: the centre of a horizon face points
+   * exactly at the brightest band, so a centre-patch average reads ~5x high
+   * on those faces and is not a spherical mean at all. */
+  const faces = FACES.map((_, i) => probeRenderTarget(renderer, cubeRT, { size: cubeRT.width, face: i }));
+  const usable = faces.filter((f) => f.ok);
+  const sphereMean = usable.length
+    ? usable.reduce((a, f) => a + f.mean, 0) / usable.length
+    : 0;
+
   const probe = {
-    // +Y is straight up (dark zenith), +X is horizon (should be bright)
-    cubeUp: probeRenderTarget(renderer, cubeRT, { size: 16, face: 2 }),
-    cubeHorizon: probeRenderTarget(renderer, cubeRT, { size: 16, face: 0 }),
-    pmrem: probeRenderTarget(renderer, envRT, { size: 16 }),
+    faces: Object.fromEntries(FACES.map((n, i) => [n, faces[i]])),
+    /** Mean of the six faces — a fair stand-in for whole-sphere irradiance. */
+    sphereMean,
+    /* NOTE: the PMREM output is a mip *atlas*, so a centre patch of it is an
+     * arbitrary region and NOT a spherical average — an earlier version of
+     * this log reported it as though it were, and it read ~6x low. Kept only
+     * as a "did PMREM write anything at all" liveness check. */
+    pmremAtlasPatch: probeRenderTarget(renderer, envRT, { size: 16 }),
   };
-  const summary = `cube+Y[${fmtProbe(probe.cubeUp)}] cube+X[${fmtProbe(probe.cubeHorizon)}] pmrem[${fmtProbe(probe.pmrem)}]`;
+  const faceSummary = FACES.map((n, i) => `${n} ${faces[i].ok ? faces[i].mean.toFixed(4) : 'FAIL'}`).join('  ');
+  const summary = `sphereMean ${sphereMean.toFixed(4)} | ${faceSummary} | atlas ${fmtProbe(probe.pmremAtlasPatch)}`;
   if (!probe.pmrem.ok || probe.pmrem.nan > 0 || probe.pmrem.mean < 1e-4) {
     console.error(`[render] IBL bake looks EMPTY or invalid — ${summary}`);
   } else {

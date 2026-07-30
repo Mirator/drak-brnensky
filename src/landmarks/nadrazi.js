@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { PROFILE } from './detail.js';
+import { PROFILE, worldSpaceUV } from './detail.js';
 
 /**
  * Brno hlavní nádraží.
@@ -189,19 +189,32 @@ export function build(b, ctx) {
     }
     // the double-kinked roof: a shallow inner pitch then a steeper eaves fall
     for (const s of [-1, 1]) {
-      const inner = new THREE.BoxGeometry(124, 0.2, 3.0);
-      inner.rotateX(s * 0.14);
-      inner.translate(cx, colY + 6.55 - 0.21, pz + s * 1.55);
-      b.raw(M.slate, inner);
-      const outer = new THREE.BoxGeometry(124, 0.2, 2.4);
-      outer.rotateX(s * 0.42);
-      outer.translate(cx, colY + 6.1, pz + s * 4.05);
-      b.raw(M.slate, outer);
-      // glazed strip along the kink, which is how these sheds are lit
-      const glazing = new THREE.BoxGeometry(120, 0.1, 1.0);
-      glazing.rotateX(s * 0.14);
-      glazing.translate(cx, colY + 6.42, pz + s * 2.9);
-      b.raw(M.shelterGlass, glazing);
+      // the two pitches, segmented per column bay: a 124 m box would stretch
+      // one slate tile across the whole shed
+      for (let q = -5; q <= 5; q++) {
+        const inner = new THREE.BoxGeometry(11.2, 0.2, 3.0);
+        inner.rotateX(s * 0.14);
+        inner.translate(cx + q * 11, colY + 6.55 - 0.21, pz + s * 1.55);
+        b.raw(M.slate, worldSpaceUV(inner, 3.0));
+        const outer = new THREE.BoxGeometry(11.2, 0.2, 2.4);
+        outer.rotateX(s * 0.42);
+        outer.translate(cx + q * 11, colY + 6.1, pz + s * 4.05);
+        b.raw(M.slate, worldSpaceUV(outer, 3.0));
+      }
+      /* Glazed strip along the kink, which is how these sheds are lit —
+         built as discrete panes between purlins. It was ONE 120 m box, and a
+         single translucent quad that long is both wrong (real train-shed
+         glazing is a run of panels) and actively broken: it sorts as one
+         object, so it tinted half the frame and cut across the sky. Two panes
+         per 11 m column bay keeps the longest transparent edge at 5.5 m. */
+      const PANE = 5.5;
+      for (let q = 0; q < Math.round(120 / PANE); q++) {
+        const gx = cx - 60 + PANE * (q + 0.5);
+        const pane = new THREE.BoxGeometry(PANE - 0.16, 0.1, 1.0);
+        pane.rotateX(s * 0.14);
+        pane.translate(gx, colY + 6.42, pz + s * 2.9);
+        b.raw(M.shelterGlass, pane);
+      }
     }
     b.raw(M.metal, new THREE.BoxGeometry(124, 0.4, 0.5).translate(cx, colY + 6.7, pz));
     // rails either side of the platform

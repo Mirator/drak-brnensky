@@ -323,6 +323,7 @@ void main() {
 const SKY_FRAG = /* glsl */`
 uniform vec3 uSun;
 uniform vec3 uZenith;
+uniform vec3 uSkyMid;
 uniform vec3 uHorizon;
 uniform vec3 uSunTint;
 uniform vec3 uGround;
@@ -374,18 +375,34 @@ void main() {
   float hs = max( h, 0.0 );
   float cosT = dot( d, uSun );
 
-  /* --- Rayleigh-ish vertical extinction: more air towards the horizon --- */
-  float air = pow( 1.0 - hs, 5.0 );
-  vec3 col = mix( uZenith, uHorizon, air );
+  /* --- Rayleigh: a gentle brightening of the WHOLE dome towards the
+         horizon.
+         This exponent used to be 5.0, and that was the reason the IBL bake
+         carried no usable irradiance. pow(1-h, 5) is 0.031 at 30 degrees
+         elevation, so the dome was 97% zenith colour and the bright band
+         was confined to the bottom few degrees — measured as 0.017 at +Y
+         against 0.348 at the horizon, a 20:1 ring with nothing above it.
+         A thin bright ring gives rim light and no ambient fill, which is
+         exactly what the shaded facades looked like.
+         1.7 spreads it the way a real twilight sky does: the eye reads the
+         zenith as dark because it sits next to a bright horizon, not
+         because it is emitting nothing. --- */
+  float air = pow( 1.0 - hs, 1.7 );
+  vec3 col = mix( uZenith, uSkyMid, air );
 
-  /* --- Mie forward scatter (tight) + broad hemispheric bias towards the sun --- */
+  /* --- Mie: the warm band keeps its own, much tighter falloff, so
+         widening the Rayleigh term above does not turn the sky orange. --- */
+  float warm = pow( 1.0 - hs, 6.0 );
+  col = mix( col, uHorizon, warm * 0.80 );
+
+  /* --- forward scatter (tight) + broad hemispheric bias towards the sun --- */
   float mie = pow( max( cosT, 0.0 ), 8.0 );
   float wide = pow( max( cosT, 0.0 ) * 0.5 + 0.5, 3.0 );
-  col += uSunTint * ( mie * 0.60 + wide * 0.13 ) * ( 0.32 + air * 0.90 );
+  col += uSunTint * ( mie * 0.60 + wide * 0.13 ) * ( 0.30 + air * 0.55 );
 
   /* --- horizon glow. exp() band, so it never shows a hard edge --- */
   float band = exp( - abs( h + 0.006 ) * 13.0 );
-  col += uHorizon * band * 0.60 * ( 0.30 + wide * 0.90 );
+  col += uHorizon * band * 0.55 * ( 0.30 + wide * 0.90 );
 
   /* --- cloud sheets, slow drift, lit from the sun side --- */
   float above = smoothstep( 0.015, 0.20, h );
@@ -435,10 +452,29 @@ export function createSky(scene) {
   const material = new THREE.ShaderMaterial({
     uniforms: {
       uSun: { value: SUN_DIR.clone() },
-      uZenith: { value: new THREE.Color(0x0d1630) },
+      /* Zenith lifted ~2.7x in linear luminance (0.008 -> 0.022). The old
+       * 0x0d1630 was ~0.008, which is near-black and contributed no
+       * irradiance overhead. */
+      uZenith: { value: new THREE.Color(0x1b2748) },
+      /* NEW: the pale blue the Rayleigh term now reaches towards over the
+       * dome. Previously the gradient ran straight from a near-black zenith
+       * to the warm horizon, so there was no bright *blue* sky anywhere for
+       * the IBL to pick up. This is what should light the shadowed walls. */
+      uSkyMid: { value: new THREE.Color(0x6d82a8) },
       uHorizon: { value: new THREE.Color(0xd88b4a) },
       uSunTint: { value: new THREE.Color(0xffd0a0) },
-      uGround: { value: new THREE.Color(0x2a2119) },
+      /* Below the horizon: warm cobble/plaster bounce, and what the IBL uses
+       * for downward-facing normals.
+       * This is the single most effective lever for lifting a shadowed
+       * facade, and it was the one I had underweighted. Integrating the
+       * cosine-weighted hemisphere about a *vertical* normal shows 49.8% of
+       * it lies below the horizon — so half a wall's ambient light comes
+       * from here, not from the sky. And it is nearly free visually: the
+       * ground plane covers the dome below the horizon in essentially every
+       * view, so this brightens shading without brightening the picture.
+       * At 0.074 linear luminance against a 0.38 horizon it is ~19% of sky
+       * brightness, which is conservative for cobbles at dusk. */
+      uGround: { value: new THREE.Color(0x5a4a38) },
       uCloudLit: { value: new THREE.Color(0xffc39a) },
       uCloudDark: { value: new THREE.Color(0x2f3348) },
       uTime: { value: 0 },

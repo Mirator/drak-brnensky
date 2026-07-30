@@ -156,8 +156,14 @@ export function buildJanacek(b, ctx) {
   const Y = 1.02;
   // the block: monolithic frame, stone-clad flanks, glazed front
   b.box(M.stonePale, cx, Y, cz, 54, 18, 30);
-  // the glazed foyer wall, set behind a deep colonnade of slender piers
-  b.box(M.glass, cx, Y, FRONT + 0.6, 46, 16.5, 1.2, { solid: false });
+  /* The glazed foyer wall, set behind a deep colonnade of slender piers.
+     Built per bay: paneGlass bakes a mullion grid into its 0..1 UVs, so one
+     46 m box stretched a single 2x3 grid across the entire front. */
+  for (let i = -11; i <= 10; i++) {
+    for (let f = 0; f < 3; f++) {
+      b.box(M.glass, cx + i * 2.1 + 1.05, Y + f * 5.5, FRONT + 0.6, 2.0, 5.4, 1.2, { solid: false });
+    }
+  }
   for (let i = -11; i <= 11; i++) {
     b.box(M.stonePale, cx + i * 2.1, Y, FRONT - 1.6, 0.55, 17.4, 1.2, { solid: i % 3 === 0 });
   }
@@ -186,7 +192,9 @@ export function buildJanacek(b, ctx) {
   b.mould(M.darkStone, cx, 0, bz, 26, 15, [[-0.5, 0], [0.5, 0], [0.5, 0.62], [-0.42, 0.7]]);
   b.collisionRing(cx, bz, 12.6, 1.6, 0, 0.8, 14);
   {
-    const w = new THREE.PlaneGeometry(25, 14);
+    // subdivided: as a transparent surface this sorts and shades as one unit,
+    // and two triangles across 25 m is a single flat lighting sample
+    const w = new THREE.PlaneGeometry(25, 14, 6, 4);
     w.rotateX(-Math.PI / 2);
     w.translate(cx, 0.5, bz);
     b.raw(M.water, w);

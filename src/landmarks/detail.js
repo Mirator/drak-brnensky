@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeAll, gableRoof } from '../geometry.js';
-import { getMaterial } from '../materials.js';
+import { getMaterial, TILE_METRES } from '../materials.js';
 
 /**
  * Shared machinery for the hand-modelled landmarks: the geometry Builder,
@@ -24,6 +24,63 @@ import { getMaterial } from '../materials.js';
  * becomes an unclimbable wall — see README "Collision". */
 export const STEP_RISE = 0.55;
 
+/**
+ * Palette key -> `TILE_METRES` key, for every material whose texture must tile
+ * at a fixed real-world size rather than once per surface. `finish()` re-projects
+ * these meshes' UVs into world space (see `worldSpaceUV`), which is what makes
+ * `makeStoneMaterial` finally scale gracefully from a 2.9 m buttress to an
+ * 84 m spire off ONE cached material.
+ */
+const WORLD_TILED = {
+  stone: 'stone',
+  stonePale: 'stone',
+  darkStone: 'stone',
+  sandstone: 'stone',
+  grass: 'grass',
+};
+
+/**
+ * Re-project a geometry's UVs into world space so one texture tile always
+ * covers `tileMetres` of real surface, whatever the size of the thing it is on.
+ *
+ * WHY THIS EXISTS. `BoxGeometry` UVs span 0..1 per face regardless of the face's
+ * world size, so texel density was decoupled from reality: Petrov's 40 m tower
+ * shaft and its 2.9 m buttress got the same eight ashlar courses, i.e. 5.0 m and
+ * 0.36 m course heights off one material. `makeStoneMaterial`'s `scale` cannot
+ * fix that at the call site, because the correct value differs per surface
+ * (`heightMetres / 3.2`) while a merged-per-material mesh can only carry one —
+ * deriving it per surface would mean one material, and one draw call, per
+ * distinct wall height.
+ *
+ * Projecting instead makes the tile size right everywhere for free. Courses now
+ * run at a true 0.40 m on every masonry surface in the landmarks, and they line
+ * up across a buttress and the wall behind it because both read the same world
+ * y. `scale` keeps its documented meaning and becomes purely a texel-density
+ * knob (canvas pixels per tile), which is the only thing left for it to mean.
+ *
+ * Projection is triplanar off the vertex normal: the dominant axis picks whether
+ * a face reads its UVs from xz (roofs, floors, ledges), zy or xy (walls). Using
+ * the vertex normal rather than the triangle normal means this is safe on
+ * indexed and non-indexed geometry alike, before or after merging.
+ */
+export function worldSpaceUV(geo, tileMetres) {
+  const pos = geo.attributes.position;
+  const uv = geo.attributes.uv;
+  if (!pos || !uv) return geo;
+  if (!geo.attributes.normal) geo.computeVertexNormals();
+  const nrm = geo.attributes.normal;
+  const T = tileMetres > 0 ? tileMetres : 1;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const ax = Math.abs(nrm.getX(i)), ay = Math.abs(nrm.getY(i)), az = Math.abs(nrm.getZ(i));
+    if (ay >= ax && ay >= az) uv.setXY(i, x / T, z / T);
+    else if (ax >= az) uv.setXY(i, z / T, y / T);
+    else uv.setXY(i, x / T, y / T);
+  }
+  uv.needsUpdate = true;
+  return geo;
+}
+
 /* ==================================================================
    materials
    ================================================================== */
@@ -40,13 +97,19 @@ export function palette({ stoneMat, roofMat } = {}) {
     /* masonry -------------------------------------------------------- */
     // city.js hands us its own gothic ashlar; reuse it so the landmarks and
     // the townhouses share one texture, and fall back if it is not passed.
-    stone: stoneMat || getMaterial('stone', { base: '#9a9285', mortar: '#7a7367', scale: 2.4 }),
-    // finer UV scale: everything small and carved — tracery, mouldings,
-    // statuary, balusters. Also the ONLY material the ornament LOD tier
-    // accepts, which is what keeps the LOD to one draw call per cluster.
-    stonePale: getMaterial('stone', { base: '#cfc7b4', mortar: '#aca395', scale: 0.85 }),
-    darkStone: getMaterial('stone', { base: '#6e695f', mortar: '#585449', scale: 1.7 }),
-    sandstone: getMaterial('stone', { base: '#b6a184', mortar: '#96836a', scale: 1.9 }),
+    // Every ashlar here is world-projected (see WORLD_TILED / worldSpaceUV), so
+    // one texture repeat always covers TILE_METRES.stone = 3.2 m = 8 x 0.40 m
+    // courses, on a 2.9 m buttress and on an 84 m spire alike. That leaves
+    // `scale` meaning only "canvas pixels per tile": scale 2 bakes 512px over
+    // 3.2 m (160 px/m) which is the generator's cap, scale 1 bakes 256px (80).
+    // So the hero surfaces get 2 and the broad or distant ones get 1.
+    stone: stoneMat || getMaterial('stone', { base: '#9a9285', mortar: '#7a7367', scale: 2 }),
+    // stonePale is every carved thing — tracery, mouldings, statuary, balusters
+    // — and the ONLY material the ornament LOD tier accepts, which is what keeps
+    // the LOD to one draw call per cluster. It gets the density.
+    stonePale: getMaterial('stone', { base: '#cfc7b4', mortar: '#aca395', scale: 2 }),
+    darkStone: getMaterial('stone', { base: '#6e695f', mortar: '#585449', scale: 1 }),
+    sandstone: getMaterial('stone', { base: '#b6a184', mortar: '#96836a', scale: 1 }),
 
 
     /* roofs ---------------------------------------------------------- */
@@ -965,6 +1028,26 @@ export class Builder {
     this._tier = 0;
     this._cluster = 'core';
     this.ornamentMats = new Set([M.stonePale]);
+    // material instance -> TILE_METRES key, resolved once
+    this.tiled = new Map();
+    for (const [key, kind] of Object.entries(WORLD_TILED)) {
+      if (M[key]) this.tiled.set(M[key], kind);
+    }
+  }
+
+  /**
+   * World metres spanned by 1.0 UV unit for a world-tiled material, or 0 if the
+   * material is not world-tiled. Reads the material's ACTUAL texture repeat, so
+   * this stays correct for a material handed in by city.js at any `scale`
+   * (its ashlar arrives at scale 2, i.e. two repeats per UV unit).
+   */
+  _tileMetres(mat) {
+    const kind = this.tiled.get(mat);
+    if (!kind) return 0;
+    const base = TILE_METRES[kind];
+    if (!base) return 0;
+    const rep = (mat.map && mat.map.repeat && mat.map.repeat.x) || 1;
+    return base * rep;
   }
 
   cluster(name) { this._cluster = name; this._tier = 0; return this; }
@@ -1209,6 +1292,8 @@ export class Builder {
     for (const [mat, geos] of this.base) {
       const merged = mergeAll(geos);
       if (!merged) continue;
+      const tile = this._tileMetres(mat);
+      if (tile) worldSpaceUV(merged, tile);
       const mesh = new THREE.Mesh(merged, mat);
       mesh.name = `landmark-${mat.name || 'mat'}`;
       mesh.castShadow = opts.castShadow !== false;
@@ -1225,6 +1310,8 @@ export class Builder {
       for (const [mat, geos] of byMat) {
         const merged = mergeAll(geos);
         if (!merged) continue;
+        const tile = this._tileMetres(mat);
+        if (tile) worldSpaceUV(merged, tile);
         merged.computeBoundingBox();
         box.union(merged.boundingBox);
         const mesh = new THREE.Mesh(merged, mat);

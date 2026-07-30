@@ -49,12 +49,15 @@ const BUILDERS = {
    * and bay archetype. `style` indexes FACADE_STYLES (0..5); `bay` is one
    * of 'plain' | 'shopfront' | 'pianoNobile' | 'attic'. `signText`, when
    * `bay: 'shopfront'`, draws a Czech sign into the awning band (pick from
-   * the exported CZECH_SIGNS, or pass your own string). */
+   * the exported CZECH_SIGNS, or pass your own string). `size` overrides
+   * the generator's default 128px base canvas (see paintFacadeBay's doc
+   * comment) -- pass a bigger one (e.g. 256) for a facade the player
+   * inspects up close. */
   facade: (opts = {}) => {
     const styleIndex = ((opts.style ?? 0) % FACADE_STYLES.length + FACADE_STYLES.length) % FACADE_STYLES.length;
     const style = FACADE_STYLES[styleIndex];
     const seed = opts.seed ?? (11 + styleIndex * 7 + (opts.bay ? hashStr(opts.bay) : 0));
-    return facadeBayMaterial(paintFacadeBay(style, { seed, kind: opts.bay || 'plain', signText: opts.signText || null }));
+    return facadeBayMaterial(paintFacadeBay(style, { seed, kind: opts.bay || 'plain', signText: opts.signText || null, size: opts.size }));
   },
 
   roof: () => makeRoofMaterial(),
