@@ -84,18 +84,32 @@ export function buildVegetation(group, collision, { rng, chunks, layout = null }
   const shrubMat = new THREE.MeshStandardMaterial({ color: 0x33562c, roughness: 0.95, flatShading: true });
   label({ treeTrunk: trunkMat, hedge: hedgeMat, shrub: shrubMat });
 
-  const trunk = new InstanceGrid(chunks, trunkGeometry(), trunkMat);
+  /* Seven grids (trunks, five species, forest) over the chunk grid meant a
+   * canopy bucket often held a dozen trees, and the parks are the one place
+   * where a camera sees many buckets at once: measured on the shipped map,
+   * vegetation alone was ~170 of a frame's ~650 draw calls — the most
+   * expensive bucket in the scene, at 60 triangles an instance. A draw call
+   * costs the same whatever it carries, so the trees bucket two grid steps
+   * coarser: a quarter of the calls, and the extra instances that come with
+   * the wider net are a rounding error against a million-triangle frame.
+   * Undergrowth keeps the fine grid — it is distance-culled per bucket, and
+   * coarsening it would stretch those buckets past their own cull radius. */
+  const treeGrid = chunks.coarse(2);
+  const trunk = new InstanceGrid(chunks, trunkGeometry(), trunkMat, { grid: treeGrid });
   const canopies = SPECIES.map((spec) => new InstanceGrid(
     chunks,
     canopyGeometry(spec),
     new THREE.MeshStandardMaterial({
       name: `canopy-${spec.name}`, color: spec.colour, roughness: 0.95, flatShading: true,
     }),
+    { grid: treeGrid },
   ));
   const forestMat = new THREE.MeshStandardMaterial({
     name: 'canopy-forest', color: 0x2c4a2a, roughness: 0.96, flatShading: true,
   });
-  const forestGrid = new InstanceGrid(chunks, distantCanopyGeometry(), forestMat, { castShadow: false });
+  const forestGrid = new InstanceGrid(chunks, distantCanopyGeometry(), forestMat, {
+    castShadow: false, grid: treeGrid,
+  });
   const shrubs = new InstanceGrid(chunks, shrubGeometry(), shrubMat, {
     castShadow: false, tier: TIER.DETAIL,
   });
