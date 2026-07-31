@@ -276,11 +276,12 @@ function buildLegacyCity(scene, collision, rngSeed = 20250726) {
         cameraAt: [Math.round(cameraAt.x), Math.round(cameraAt.z)],
       };
     },
-    update(dt, t) {
+    update(dt, t, viewPos = null) {
       for (const tr of trams) tr.update(dt);
       if (props.update) props.update(dt, t);
-      // one frame of latency by design: the camera is sampled during render
-      chunks.update(cameraAt.x, cameraAt.z);
+      // Without a camera from the caller this has one frame of latency by
+      // design: the view is sampled during render off the ground plane.
+      chunks.update(viewPos ? viewPos.x : cameraAt.x, viewPos ? viewPos.z : cameraAt.z);
     },
   };
 }
@@ -444,7 +445,7 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
   );
   const trams = tramInfo.trams;
   const chunkMeshes = chunks.finish(cityGroup);
-  chunks.update(0, 0);
+  chunks.update(map.start.x, map.start.z);
 
   const edge = HALF - 26;
   collision.bounds = { x0: -edge, z0: -edge, x1: edge, z1: edge };
@@ -536,10 +537,17 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
         cameraAt: [Math.round(cameraAt.x), Math.round(cameraAt.z)],
       };
     },
-    update(dt, t) {
+    /**
+     * `viewPos` is the camera. It is optional only because the LOD used to
+     * have no way of asking: the fallback samples the view during render off
+     * a sentinel mesh, which costs a frame of latency and goes stale the
+     * moment that mesh is itself culled. Callers that have the camera to
+     * hand should pass it — the detail LOD keys off this point.
+     */
+    update(dt, t, viewPos = null) {
       for (const tram of trams) tram.update(dt);
       if (props.update) props.update(dt, t);
-      chunks.update(cameraAt.x, cameraAt.z);
+      chunks.update(viewPos ? viewPos.x : cameraAt.x, viewPos ? viewPos.z : cameraAt.z);
       landmarkInfo.update?.(dt, t);
     },
   };

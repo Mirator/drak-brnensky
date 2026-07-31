@@ -56,6 +56,13 @@ import { SHADOW_PRESETS } from './lighting.js';
    so a later pass writes into the scene buffer, and a pass sampling a
    texture that is attached to the framebuffer it is drawing into is a
    feedback loop. See render/depth.js.
+
+   GTAO is the one exception, and only because it cannot loop back: it
+   reads the raw attachment (it needs window-space depth, not metres) but
+   every draw it makes targets its own buffers or the *write* buffer. That
+   is what lets it skip its own full-scene prepass — see the note on the
+   pass below, and do not extend the exception to anything that draws into
+   the read buffer.
    ================================================================== */
 
 export const QUALITY_LEVELS = ['low', 'medium', 'high', 'ultra'];
@@ -213,8 +220,43 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
   gtaoPass.updatePdMaterial({ lumaPhi: 6, depthPhi: 2.2, normalPhi: 3.2, radius: 5, samples: 12 });
   gtaoPass.blendIntensity = 0.8;
   gtaoPass.output = GTAOPass.OUTPUT.Default;
-  // AO runs at a fraction of the frame; its own depth/normal prepass is
-  // internally consistent, so there is no resolution mismatch to fix up.
+
+  /* ---- AO reads the scene depth instead of rendering its own G-buffer ----
+   *
+   * `GTAOPass` ships with a full-scene normal+depth prepass: a second
+   * complete traversal of the city with a MeshNormalMaterial override. On
+   * the shipped map that was 573 of the frame's ~1230 draw calls and ~3.8 ms
+   * of a ~9 ms frame — the single most expensive thing in the renderer, and
+   * bigger than the scene pass itself. This stack is submission-bound, not
+   * fill-bound (the frame costs the same at 320x180 as at 1920x1080), so a
+   * whole extra pass over the geometry is exactly the wrong thing to pay for.
+   *
+   * `sceneTarget` already carries this frame's depth, resolved by the
+   * RenderPass immediately before this pass runs. Handing that over clears
+   * the pass's internal `_renderGBuffer` flag — the prepass is skipped
+   * entirely — and switches both the AO and the denoise shader to
+   * `NORMAL_VECTOR_TYPE 0`, which reconstructs view normals from depth
+   * derivatives instead of reading a normal buffer.
+   *
+   * This does NOT break the rule in the header that nothing may sample the
+   * scene buffer's own depth attachment: that rule is about feedback, and
+   * GTAO's `Default` output copies the read buffer into the *write* buffer
+   * and blends the AO there, so no draw in this pass ever targets the
+   * framebuffer whose depth it is reading. */
+  gtaoPass.normalRenderTarget.dispose();
+  gtaoPass.normalRenderTarget = {
+    // Nothing renders into a normal buffer any more, so the pass's own
+    // resize and dispose have nothing to do. `depthTexture` is still read
+    // once, by the OUTPUT.Depth debug view, and that wants the scene depth.
+    depthTexture,
+    texture: null,
+    setSize() {},
+    dispose() {},
+  };
+  gtaoPass.setGBuffer(depthTexture);
+
+  // AO runs at a fraction of the frame; the depth it samples is full
+  // resolution, which is a straight point-sampled read — no mismatch to fix.
   const gtaoSetSize = GTAOPass.prototype.setSize.bind(gtaoPass);
   gtaoPass.setSize = (w, h) => gtaoSetSize(
     Math.max(1, Math.round(w * currentPreset.aoScale)),

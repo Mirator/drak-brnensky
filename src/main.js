@@ -1095,7 +1095,7 @@ function advance(dt, shouldRender = true) {
     const t = performance.now() * 0.00006;
     camera.position.set(Math.cos(t) * 190 - 30, 96, Math.sin(t) * 190 + 40);
     camera.lookAt(MENU_LOOK);
-    if (world) world.update(dt, state.time);
+    if (world) world.update(dt, state.time, camera.position);
     sky.update(dt, camera);
     if (lighting) lighting.update(dt, camera.position);
   } else if (state.mode === 'dead') {
@@ -1293,7 +1293,7 @@ function stepGame(dt, frozen = false) {
   }
 
   for (const r of rifts) r.visual.update(dt);
-  world.update(dt, state.time);
+  world.update(dt, state.time, camera.position);
   if (world.landmarks.update) world.landmarks.update(dt, state.time);
 
   // pickups
@@ -1532,6 +1532,11 @@ window.__brno = {
       lighting.update(0, camera.position);
       lighting.forceShadowUpdate();
     }
+    /* Same reason, for the city's detail LOD: it is keyed off the view
+     * position, and a free-camera view is nowhere near where the player was
+     * left standing. dt 0 advances no trams and no prop animation, so this
+     * only re-evaluates visibility. */
+    if (world) world.update(0, state.time, camera.position);
     sky.update(0, camera);
     let viaPostStack = false;
     if (render && postStackOk) {

@@ -63,6 +63,24 @@ export class Chunks {
     return gz * this.cells + gx;
   }
 
+  /**
+   * The same extent bucketed into `factor`x larger cells, for callers that
+   * want the spatial keys but not this grid's granularity.
+   *
+   * `InstanceGrid` is the reason this exists. One instanced mesh per chunk
+   * per species restores frustum culling, but on the 136 m grid a canopy
+   * bucket holds as few as fourteen trees — and a draw call costs the same
+   * whether it carries fourteen instances or four hundred. This renderer is
+   * submission-bound, so past a point the culling is costing more calls than
+   * it saves triangles.
+   */
+  coarse(factor) {
+    return new Chunks({
+      cells: Math.max(1, Math.round(this.cells / factor)),
+      detailRadius: this.detailRadius,
+    });
+  }
+
   cellCentre(cell) {
     const gx = cell % this.cells;
     const gz = Math.floor(cell / this.cells);
@@ -144,8 +162,13 @@ export class Chunks {
  * instanced mesh is cheaper than thirty-six tiny ones.
  */
 export class InstanceGrid {
+  /**
+   * `opts.grid` buckets the instances on a different (coarser) grid than the
+   * one that owns the LOD bookkeeping — see `Chunks.coarse()`.
+   */
   constructor(chunks, geometry, material, opts = {}) {
     this.chunks = chunks;
+    this.grid = opts.grid || chunks;
     this.geometry = geometry;
     this.material = material;
     this.opts = opts;
@@ -155,7 +178,7 @@ export class InstanceGrid {
   }
 
   push(x, y, z, rot = 0, sx = 1, sy = sx, sz = sx, colour = null) {
-    const cell = this.chunks.cellOf(x, z);
+    const cell = this.grid.cellOf(x, z);
     let set = this.sets.get(cell);
     if (!set) {
       set = new InstanceSet(this.geometry, this.material, this.opts);
@@ -166,7 +189,7 @@ export class InstanceGrid {
   }
 
   finish(group) {
-    const halfDiag = (this.chunks.cellSize * Math.SQRT2) / 2;
+    const halfDiag = (this.grid.cellSize * Math.SQRT2) / 2;
     let meshes = 0;
     for (const [cell, set] of this.sets) {
       const mesh = set.finish(group);
@@ -177,7 +200,7 @@ export class InstanceGrid {
       if (this.tier === TIER.DETAIL) {
         mesh.castShadow = false;
         const sphere = mesh.boundingSphere || mesh.geometry.boundingSphere;
-        const [ccx, ccz] = this.chunks.cellCentre(cell);
+        const [ccx, ccz] = this.grid.cellCentre(cell);
         this.chunks.detailMeshes.push({
           mesh,
           cx: sphere ? sphere.center.x : ccx,
@@ -192,15 +215,21 @@ export class InstanceGrid {
 }
 
 /**
- * Camera position tracking without touching the interface contract.
+ * Camera position tracking for callers that cannot hand one over.
  *
- * `buildCity(...).update(dt, time)` takes no camera, and `src/main.js`
- * belongs to another engineer, so the LOD needs the view position from
- * somewhere else. `Object3D.onBeforeRender` receives the camera being
- * rendered with, so a mesh that is always submitted (the ground plane) can
- * report it. Shadow and depth prepasses render with orthographic cameras,
- * which are filtered out, and the value is only *applied* in update(), so
- * nothing mutates the scene graph mid-render.
+ * `buildCity(...).update()` now takes the view position as its third
+ * argument, and that is the path the game uses. This is the fallback for
+ * everything else: `Object3D.onBeforeRender` receives the camera being
+ * rendered with, so a mesh that is always submitted can report it. Shadow
+ * and depth prepasses render with orthographic cameras, which are filtered
+ * out, and the value is only *applied* in update(), so nothing mutates the
+ * scene graph mid-render.
+ *
+ * Note the failure mode that makes the explicit argument worth preferring:
+ * the sentinel only reports while it is itself being drawn, so if it is
+ * frustum-culled the LOD silently freezes at the last position it saw. On
+ * the imported map the sentinel is one 128 m terrain chunk, and it is
+ * culled for most of the city.
  */
 export function trackCamera(sentinel) {
   const at = { x: 0, z: 0, seen: false };

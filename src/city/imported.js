@@ -324,6 +324,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks) {
       const geo = batch.geometry();
       if (!geo) continue;
       const mesh = new THREE.Mesh(geo, material);
+      mesh.name = `mass:facade-${style}`;
       // Keep cascaded shadows on the historic-core bucket. Distant massing
       // still receives shadows but does not get submitted three extra times.
       mesh.castShadow = cell === centralCell;
@@ -334,6 +335,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks) {
     const geo = batch.geometry();
     if (!geo) continue;
     const mesh = new THREE.Mesh(geo, roofMat);
+    mesh.name = 'mass:roof';
     // Roof silhouettes are already grounded by facade shadows; excluding
     // these dense triangulations keeps the cascaded submission below budget.
     mesh.castShadow = false; mesh.receiveShadow = true; group.add(mesh); meshes++;
