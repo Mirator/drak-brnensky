@@ -2,7 +2,7 @@
   "schema": 1,
   "sourceDate": "2026-07-30T07:34:01Z",
   "sha256": {
-    "brno-map.json": "de887120596cb0a3eb61cf785f13e91101469d23c02b68ba9d581e8ada906353",
+    "brno-map.json": "397e33985500c3b4077c89618144fa788add6090fa498afe11e91a84014165d4",
     "brno-terrain.bin": "cbc6af4d7ce54e8e4778025046aabb7e7b4c7a8abeac320bb4130ccf5390b25d"
   }
 }

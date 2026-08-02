@@ -51,7 +51,7 @@ export const RECTS = [
   [44, -50, 20, 30], // Dům u čtyř mamlasů, east side
   [44, 4, 18, 24], // Palác Omega, east side
   [-44, -30, 20, 28], // Schwanzův palác / Dům pánů z Lipé, west side
-];
+].slice(0, 2);
 
 export function build(b, ctx) {
   const { M, info } = ctx;
@@ -149,6 +149,10 @@ export function build(b, ctx) {
 
   /* ================= 3. Dům u čtyř mamlasů ======================== */
   // Four atlantes carrying a full-width balcony; risalits ending in towers.
+  // Named square frontages are now generated from their exact OSM shells.
+  // Keep the old authored recipes below as reference, but never instantiate
+  // the duplicate free-standing blocks in the geospatial city.
+  if (false) {
   {
     const hx = 44, hz = -50, W = 30, D = 20, EAVES = 20;
     b.tier(0);
@@ -267,7 +271,9 @@ export function build(b, ctx) {
   }
 
   /* ================= 6. tram shelters ============================= */
-  for (const [sx, sz] of [[-22, -30], [20, 8]]) {
+  }
+  // Shelters are placed from the imported tram centreline by city/props.
+  for (const [sx, sz] of []) {
     b.tier(0);
     b.box(M.metal, sx, 0, sz, 9, 0.22, 3.4, { solid: false });
     for (let i = -1; i <= 1; i++) {

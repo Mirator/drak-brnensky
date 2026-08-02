@@ -40,6 +40,14 @@ const freeAt = (name, key, eyeOffset, targetOffset, fov) => {
     [p.x + targetOffset[0], y + targetOffset[1], p.z + targetOffset[2]],
     fov);
 };
+const freeBetween = (name, eyeKey, eyeOffset, targetKey, targetOffset, fov) => {
+  const eye = place(eyeKey); const target = place(targetKey);
+  const eyeY = ground(eyeKey); const targetY = ground(targetKey);
+  return free(name,
+    [eye.x + eyeOffset[0], eyeY + eyeOffset[1], eye.z + eyeOffset[2]],
+    [target.x + targetOffset[0], targetY + targetOffset[1], target.z + targetOffset[2]],
+    fov);
+};
 const followAt = (name, key, offset, yaw, opts = {}) => {
   const p = place(key);
   return follow(name, [p.x + offset[0], ground(key), p.z + offset[1]], yaw, opts);
@@ -52,8 +60,8 @@ export const VIEWS = [
   freeAt('petrov-skyline', 'petrov', [148, 78, 132], [0, 50, 2], 46),
   freeAt('spilberk-far', 'spilberk', [128, 46, 86], [0, 52, 0], 50),
   freeAt('spilberk-walls', 'spilberk', [0, 26, 72], [0, 24, 18], 62),
-  freeAt('radnice-tower', 'radnice', [0, 18, 60], [0, 28, 2], 58),
-  freeAt('radnice-portal', 'radnice', [-2, 4, 18], [0, 10, 3], 66),
+  freeBetween('radnice-tower', 'zelnyTrh', [0, 14, 42], 'radnice', [0, 30, 0], 58),
+  freeBetween('radnice-portal', 'zelnyTrh', [0, 5, -36], 'radnice', [0, 9, 1], 62),
   freeAt('svoboda-wide', 'svoboda', [18, 14, 65], [4, 10, -9], 58),
   freeAt('zelny-parnas', 'zelnyTrh', [0, 8, 38], [0, 7, 0], 60),
   freeAt('nadrazi', 'nadrazi', [0, 16, 38], [0, 12, -24], 58),
@@ -177,17 +185,18 @@ function placeFreeCamera(view) {
   }
   toEye.divideScalar(want);
 
-  let dist = want;
   const collision = b.collision || null;
-  const hit = collision && collision.raycastHit
-    ? collision.raycastHit(target, toEye, want)
-    : null;
-  if (hit && hit.hit) {
-    // stop short of whatever is in the way, and never end up on top of it
-    dist = Math.max(6, hit.t * 0.85);
+  eye.copy(target).addScaledVector(toEye, want);
+  if (collision?.isSolidAt?.(eye.x, eye.y, eye.z)) {
+    // The target is normally inside the landmark we are photographing, so a
+    // ray that starts at the target reports that landmark immediately and
+    // drags the eye into its roof. Test the authored eye instead; if it is
+    // obstructed, step farther away along the same composition vector.
+    for (let extra = 8; extra <= 96; extra += 8) {
+      eye.copy(target).addScaledVector(toEye, want + extra);
+      if (!collision.isSolidAt(eye.x, eye.y, eye.z)) break;
+    }
   }
-
-  eye.copy(target).addScaledVector(toEye, dist);
   if (collision && collision.groundHeight) {
     const ground = collision.groundHeight(eye.x, eye.z, 40, 2) || 0;
     if (eye.y < ground + 2.5) eye.y = ground + 2.5;

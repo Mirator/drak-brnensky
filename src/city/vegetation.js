@@ -95,14 +95,16 @@ export function buildVegetation(group, collision, { rng, chunks, layout = null }
    * Undergrowth keeps the fine grid — it is distance-culled per bucket, and
    * coarsening it would stretch those buckets past their own cull radius. */
   const treeGrid = chunks.coarse(2);
-  const trunk = new InstanceGrid(chunks, trunkGeometry(), trunkMat, { grid: treeGrid });
+  const trunk = new InstanceGrid(chunks, trunkGeometry(), trunkMat, {
+    grid: treeGrid, castShadow: false,
+  });
   const canopies = SPECIES.map((spec) => new InstanceGrid(
     chunks,
     canopyGeometry(spec),
     new THREE.MeshStandardMaterial({
       name: `canopy-${spec.name}`, color: spec.colour, roughness: 0.95, flatShading: true,
     }),
-    { grid: treeGrid },
+    { grid: treeGrid, castShadow: false },
   ));
   const forestMat = new THREE.MeshStandardMaterial({
     name: 'canopy-forest', color: 0x2c4a2a, roughness: 0.96, flatShading: true,

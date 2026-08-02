@@ -57,7 +57,10 @@ const BUILDERS = {
     const styleIndex = ((opts.style ?? 0) % FACADE_STYLES.length + FACADE_STYLES.length) % FACADE_STYLES.length;
     const style = FACADE_STYLES[styleIndex];
     const seed = opts.seed ?? (11 + styleIndex * 7 + (opts.bay ? hashStr(opts.bay) : 0));
-    return facadeBayMaterial(paintFacadeBay(style, { seed, kind: opts.bay || 'plain', signText: opts.signText || null, size: opts.size }));
+    return facadeBayMaterial(
+      paintFacadeBay(style, { seed, kind: opts.bay || 'plain', signText: opts.signText || null, size: opts.size }),
+      { lit: opts.lit === true },
+    );
   },
 
   roof: () => makeRoofMaterial(),

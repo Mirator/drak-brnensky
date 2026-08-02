@@ -43,8 +43,10 @@ function paintPolygon(grid, poly, flag) {
   grid.paintBounds(b.minX, b.minZ, b.maxX, b.maxZ, flag, (x, z) => polygonContains(poly, x, z));
 }
 
-function roadStyle(kind) {
-  if (kind === 'pedestrian' || kind === 'footway' || kind === 'path' || kind === 'steps') return 'sett';
+function roadStyle(roadOrKind) {
+  const road = typeof roadOrKind === 'string' ? { kind: roadOrKind } : roadOrKind;
+  if (['paving_stones', 'sett', 'cobblestone', 'unhewn_cobblestone'].includes(road.surface)) return 'sett';
+  if (road.kind === 'pedestrian' || road.kind === 'footway' || road.kind === 'path' || road.kind === 'steps') return 'sett';
   return 'asphalt';
 }
 
@@ -68,7 +70,7 @@ export function installImportedLayout(map) {
     name: road.name || road.kind,
     w: road.width,
     tram: false,
-    paving: roadStyle(road.kind),
+    paving: roadStyle(road),
     shops: road.kind === 'pedestrian' ? 0.8 : 0,
     pts: qLine(road.points),
   }));
@@ -79,23 +81,56 @@ export function installImportedLayout(map) {
     for (const poly of decodedPolygons(area)) {
       const b = boundsOfPolygon(poly);
       plazas.push({
+        id: area.id,
         r: [(b.minX + b.maxX) / 2, (b.minZ + b.maxZ) / 2, b.maxX - b.minX, b.maxZ - b.minZ],
         type: area.kind === 'park' ? FLAG.PARK : FLAG.PLAZA,
         name: area.name || area.id,
         paving: area.kind === 'park' ? null : 'fan',
       });
-      if (plazas.length >= 60) break;
     }
-    if (plazas.length >= 60) break;
   }
+  const heroAreas = new Set(['way/4934858', 'way/8153695']);
+  plazas.sort((a, b) => Number(heroAreas.has(b.id)) - Number(heroAreas.has(a.id))
+    || compareStrings(String(a.id), String(b.id)));
+  plazas.length = Math.min(60, plazas.length);
 
   const tramRoutes = stitchLines(map.trams.map((tram) => qLine(tram.points))).slice(0, 5);
   const tramStops = ['ceska', 'svoboda', 'zelnyTrh', 'nadrazi']
     .filter((key) => places[key])
-    .map((key) => ({
-      name: places[key].name, x: places[key].x, z: places[key].z, rot: 0,
-    }));
+    .map((key) => nearestTramStop(places[key], map.trams, map.tramStops || []));
   return { places, roads, plazas, tramRoutes, tramStops };
+}
+
+function nearestTramStop(place, trams, platforms = []) {
+  let platform = null;
+  for (const candidate of platforms) {
+    const distance = Math.hypot(candidate.x - place.x, candidate.z - place.z);
+    if (distance < 170 && (!platform || distance < platform.distance)) platform = { ...candidate, distance };
+  }
+  const query = platform || place;
+  let best = { distance: Infinity, x: query.x, z: query.z, rot: 0 };
+  for (const tram of trams) {
+    const points = qLine(tram.points);
+    for (let i = 1; i < points.length; i++) {
+      const [ax, az] = points[i - 1]; const [bx, bz] = points[i];
+      const dx = bx - ax; const dz = bz - az; const lengthSq = dx * dx + dz * dz;
+      if (!lengthSq) continue;
+      const t = Math.max(0, Math.min(1, ((query.x - ax) * dx + (query.z - az) * dz) / lengthSq));
+      const x = ax + dx * t; const z = az + dz * t;
+      const distance = Math.hypot(query.x - x, query.z - z);
+      if (distance >= best.distance) continue;
+      const length = Math.sqrt(lengthSq);
+      const nx = -dz / length; const nz = dx / length;
+      const side = ((query.x - x) * nx + (query.z - z) * nz) >= 0 ? 1 : -1;
+      best = {
+        distance,
+        x: platform ? platform.x : x + nx * side * 5.5,
+        z: platform ? platform.z : z + nz * side * 5.5,
+        rot: Math.atan2(-dz, dx),
+      };
+    }
+  }
+  return { name: place.name, x: best.x, z: best.z, rot: best.rot };
 }
 
 /** Join unordered Overpass way fragments into a small number of useful continuous tram routes. */
@@ -126,35 +161,63 @@ export function stitchLines(source, tolerance = 2.5) {
   return lines.filter((line) => length(line) > 80).sort((a, b) => length(b) - length(a));
 }
 
-function areaMaterial(kind) {
-  if (kind === 'park') return getMaterial('grass');
-  if (kind === 'water') return new THREE.MeshStandardMaterial({
-    color: 0x284c5e, roughness: 0.22, metalness: 0.05, transparent: true, opacity: 0.84,
-  });
+const WATER_MATERIAL = new THREE.MeshStandardMaterial({
+  color: 0x284c5e, roughness: 0.22, metalness: 0.05, transparent: true, opacity: 0.84,
+});
+WATER_MATERIAL.name = 'imported-water';
+
+function areaMaterial(area) {
+  if (area.kind === 'park') return getMaterial(area.surface === 'gravel' ? 'gravel' : 'grass');
+  if (area.kind === 'water') return WATER_MATERIAL;
+  if (['paving_stones', 'concrete', 'concrete:plates'].includes(area.surface)) return getMaterial('pavementSlab');
   return getMaterial('cobbleFan');
 }
 
-function addDrapedPolygon(batchFor, poly, terrain, lift = 0.045) {
+function addDrapedTriangle(batchFor, a, b, c, terrain, lift, maxSpan, depth = 0) {
+  const edges = [
+    [a, b, a.distanceToSquared(b)],
+    [b, c, b.distanceToSquared(c)],
+    [c, a, c.distanceToSquared(a)],
+  ].sort((u, v) => v[2] - u[2]);
+  if (edges[0][2] > maxSpan * maxSpan && depth < 12) {
+    const [u, v] = edges[0];
+    const m = u.clone().add(v).multiplyScalar(0.5);
+    const other = u === a && v === b ? c : u === b && v === c ? a : b;
+    addDrapedTriangle(batchFor, u, m, other, terrain, lift, maxSpan, depth + 1);
+    addDrapedTriangle(batchFor, m, v, other, terrain, lift, maxSpan, depth + 1);
+    return;
+  }
+  const p = (v) => [v.x, terrain.heightAt(v.x, v.y) + lift, v.y];
+  const cx = (a.x + b.x + c.x) / 3;
+  const cz = (a.y + b.y + c.y) / 3;
+  batchFor(cx, cz).tri(
+    p(c), p(b), p(a),
+    [c.x / 8, c.y / 8], [b.x / 8, b.y / 8], [a.x / 8, a.y / 8],
+  );
+}
+
+export function addDrapedPolygon(batchFor, poly, terrain, lift = 0.045, maxSpan = 4) {
   const contour = poly[0].map(([x, z]) => new THREE.Vector2(x, z));
   const holes = poly.slice(1).map((ring) => ring.map(([x, z]) => new THREE.Vector2(x, z)));
   const points = contour.concat(...holes);
   const faces = THREE.ShapeUtils.triangulateShape(contour, holes);
   for (const [a, b, c] of faces) {
-    const va = points[a]; const vb = points[b]; const vc = points[c];
-    const p = (v) => [v.x, terrain.heightAt(v.x, v.y) + lift, v.y];
-    const cx = (va.x + vb.x + vc.x) / 3;
-    const cz = (va.y + vb.y + vc.y) / 3;
-    batchFor(cx, cz).tri(
-      p(vc), p(vb), p(va),
-      [vc.x / 8, vc.y / 8], [vb.x / 8, vb.y / 8], [va.x / 8, va.y / 8],
-    );
+    addDrapedTriangle(batchFor, points[a], points[b], points[c], terrain, lift, maxSpan);
   }
 }
 
-function addRoad(batch, points, width, terrain, lift = 0.06, lateralOffset = 0) {
+export function addRoad(batchOrFor, points, width, terrain, lift = 0.06, lateralOffset = 0, maxSpan = 4) {
+  const batchFor = typeof batchOrFor === 'function' ? batchOrFor : () => batchOrFor;
   const half = width / 2;
   for (let i = 1; i < points.length; i++) {
-    const [ax, az] = points[i - 1]; const [bx, bz] = points[i];
+    const [sourceAx, sourceAz] = points[i - 1]; const [sourceBx, sourceBz] = points[i];
+    const sourceDx = sourceBx - sourceAx; const sourceDz = sourceBz - sourceAz;
+    const sourceLength = Math.hypot(sourceDx, sourceDz);
+    const pieces = Math.max(1, Math.ceil(sourceLength / maxSpan));
+    for (let piece = 0; piece < pieces; piece++) {
+    const t0 = piece / pieces; const t1 = (piece + 1) / pieces;
+    const ax = sourceAx + sourceDx * t0; const az = sourceAz + sourceDz * t0;
+    const bx = sourceAx + sourceDx * t1; const bz = sourceAz + sourceDz * t1;
     const dx = bx - ax; const dz = bz - az; const len = Math.hypot(dx, dz);
     if (len < 0.05) continue;
     const sideX = -dz / len; const sideZ = dx / len;
@@ -163,7 +226,26 @@ function addRoad(batch, points, width, terrain, lift = 0.06, lateralOffset = 0) 
     const p = (x, z) => [x, terrain.heightAt(x, z) + lift, z];
     const a = p(ax + ox + nx, az + oz + nz); const b = p(bx + ox + nx, bz + oz + nz);
     const c = p(bx + ox - nx, bz + oz - nz); const d = p(ax + ox - nx, az + oz - nz);
-    batch.quad4(a, b, c, d, [0, 0], [0, len / 6], [width / 6, len / 6], [width / 6, 0]);
+    batchFor((ax + bx) / 2, (az + bz) / 2).quad4(
+      a, b, c, d, [0, 0], [0, len / 6], [width / 6, len / 6], [width / 6, 0],
+    );
+    }
+  }
+  // A small fan closes the wedge between adjacent segments at bends.
+  if (lateralOffset === 0 && width > 0.3) for (let i = 1; i + 1 < points.length; i++) {
+    const [x, z] = points[i];
+    const y = terrain.heightAt(x, z) + lift;
+    const batch = batchFor(x, z);
+    const steps = 8;
+    for (let k = 0; k < steps; k++) {
+      const a = (k / steps) * Math.PI * 2;
+      const b = ((k + 1) / steps) * Math.PI * 2;
+      batch.tri(
+        [x, y, z], [x + Math.cos(b) * half, terrain.heightAt(x + Math.cos(b) * half, z + Math.sin(b) * half) + lift, z + Math.sin(b) * half],
+        [x + Math.cos(a) * half, terrain.heightAt(x + Math.cos(a) * half, z + Math.sin(a) * half) + lift, z + Math.sin(a) * half],
+        [0.5, 0.5], [0.5 + Math.cos(b) * 0.5, 0.5 + Math.sin(b) * 0.5], [0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5],
+      );
+    }
   }
 }
 
@@ -178,7 +260,7 @@ export function buildImportedPlan(group, map, terrain, chunks = null) {
   for (const area of map.areas) {
     const flag = area.kind === 'park' ? FLAG.PARK
       : area.kind === 'water' ? FLAG.RESERVED : FLAG.PLAZA;
-    const mat = areaMaterial(area.kind);
+    const mat = areaMaterial(area);
     for (const poly of decodedPolygons(area)) {
       paintPolygon(flags, poly, flag);
       addDrapedPolygon(
@@ -187,6 +269,10 @@ export function buildImportedPlan(group, map, terrain, chunks = null) {
         terrain,
         area.kind === 'water' ? 0.02 : 0.045,
       );
+      if (area.id === 'way/4934858') {
+        const kerb = getMaterial('kerb');
+        for (const ring of poly) addRoad((x, z) => batchFor(kerb, x, z), ring, 0.22, terrain, 0.085, 0, 3);
+      }
     }
   }
 
@@ -195,25 +281,18 @@ export function buildImportedPlan(group, map, terrain, chunks = null) {
   for (const road of map.roads) {
     const points = qLine(road.points);
     flags.line(points, road.width, FLAG.ROAD);
-    const mat = roadStyle(road.kind) === 'sett' ? cobble : asphalt;
-    for (let i = 1; i < points.length; i++) {
-      const a = points[i - 1]; const b = points[i];
-      addRoad(batchFor(mat, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2), [a, b], road.width, terrain);
-    }
+    const mat = roadStyle(road) === 'sett' ? cobble : asphalt;
+    addRoad((x, z) => batchFor(mat, x, z), points, road.width, terrain);
   }
 
   const railMat = getMaterial('paintedMetal', { seed: 25833, color: '#7b7770' });
+  const trackBed = getMaterial('cobbleTramTrack');
   for (const tram of map.trams) {
     const points = qLine(tram.points);
     flags.line(points, 3.2, FLAG.TRACK);
+    addRoad((x, z) => batchFor(trackBed, x, z), points, 2.25, terrain, 0.072);
     for (const offset of [-0.72, 0.72]) {
-      for (let i = 1; i < points.length; i++) {
-        const a = points[i - 1]; const b = points[i];
-        addRoad(
-          batchFor(railMat, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2),
-          [a, b], 0.09, terrain, 0.105, offset,
-        );
-      }
+      addRoad((x, z) => batchFor(railMat, x, z), points, 0.09, terrain, 0.105, offset);
     }
   }
 
@@ -226,13 +305,10 @@ export function buildImportedPlan(group, map, terrain, chunks = null) {
   return { flags: flags.data, meshes };
 }
 
-const FACADE_STYLES = [0, 2, 4];
+const FACADE_STYLES = [0, 1, 2, 3, 4, 5];
 
-function facadeMaterial(index) {
-  return getMaterial('facade', {
-    style: FACADE_STYLES[index % FACADE_STYLES.length],
-    bay: 'plain',
-  });
+function facadeMaterial(style, band = 'plain', lit = false) {
+  return getMaterial('facade', { style, bay: band, lit });
 }
 
 function hashId(id) {
@@ -241,106 +317,300 @@ function hashId(id) {
   return h >>> 0;
 }
 
-export function buildImportedBuildings(group, collision, map, terrain, chunks) {
-  const walls = Array.from({ length: FACADE_STYLES.length }, () => new Map());
-  const roofs = new Map();
-  const roofMat = getMaterial('roof');
-  const entryFor = (sets, style, x, z) => {
-    const cell = chunks.cellOf(x, z);
-    let batch = sets[style].get(cell);
-    if (!batch) sets[style].set(cell, (batch = new Batch()));
-    return batch;
+function siteExclusions(overrides) {
+  const ids = new Set();
+  for (const site of Object.values(overrides?.sites || {})) {
+    for (const id of site.excludeBuildingIds || []) ids.add(id);
+  }
+  return ids;
+}
+
+function facadeRecipes(overrides) {
+  const out = new Map();
+  for (const site of Object.values(overrides?.sites || {})) {
+    for (const [id, recipe] of Object.entries(site.facadeRecipes || {})) out.set(id, recipe);
+  }
+  return out;
+}
+
+function distanceToSegment(x, z, a, b) {
+  const dx = b.x - a.x; const dz = b.z - a.z;
+  const lengthSq = dx * dx + dz * dz;
+  const t = lengthSq ? Math.max(0, Math.min(1, ((x - a.x) * dx + (z - a.z) * dz) / lengthSq)) : 0;
+  return Math.hypot(x - a.x - dx * t, z - a.z - dz * t);
+}
+
+function onHeroRoute(x, z, map, overrides) {
+  const route = (overrides?.heroRoute || []).map((key) => map.places[key]).filter(Boolean);
+  if (!route.length) return false;
+  for (const place of route) if (Math.hypot(x - place.x, z - place.z) < 95) return true;
+  for (let i = 1; i < route.length; i++) if (distanceToSegment(x, z, route[i - 1], route[i]) < 72) return true;
+  return false;
+}
+
+function facadeStyle(building, recipe) {
+  if (recipe === 'mamlasu') return 5;
+  if (recipe === 'lipy') return 0;
+  if (recipe === 'omega') return 2;
+  if (/church|cathedral|civic|public/.test(building.use || '')) return 1;
+  return FACADE_STYLES[hashId(building.id) % FACADE_STYLES.length];
+}
+
+function roofMaterial(building) {
+  const material = building.roof?.material || '';
+  const colour = building.roof?.colour || '';
+  if (/slate/.test(material) || /black|grey|gray/.test(colour)) return getMaterial('roofSlate');
+  if (/metal|copper/.test(material) || /green/.test(colour)) return getMaterial('roofCopper');
+  return getMaterial('roof');
+}
+
+function ringArea(ring) {
+  let area = 0;
+  for (let i = 1; i < ring.length; i++) area += ring[i - 1][0] * ring[i][1] - ring[i][0] * ring[i - 1][1];
+  return Math.abs(area) / 2;
+}
+
+export function orientedBounds(ring) {
+  let best = null;
+  for (let i = 1; i < ring.length; i++) {
+    const dx = ring[i][0] - ring[i - 1][0]; const dz = ring[i][1] - ring[i - 1][1];
+    const length = Math.hypot(dx, dz);
+    if (!best || length > best.length) best = { dx, dz, length };
+  }
+  if (!best || best.length < 0.1) return null;
+  const ux = best.dx / best.length; const uz = best.dz / best.length;
+  const vx = -uz; const vz = ux;
+  let minU = Infinity; let maxU = -Infinity; let minV = Infinity; let maxV = -Infinity;
+  for (const [x, z] of ring) {
+    const u = x * ux + z * uz; const v = x * vx + z * vz;
+    minU = Math.min(minU, u); maxU = Math.max(maxU, u);
+    minV = Math.min(minV, v); maxV = Math.max(maxV, v);
+  }
+  const cu = (minU + maxU) / 2; const cv = (minV + maxV) / 2;
+  return {
+    cx: cu * ux + cv * vx, cz: cu * uz + cv * vz,
+    width: maxU - minU, depth: maxV - minV,
+    rotation: Math.atan2(-uz, ux), ux, uz, vx, vz,
   };
-  const roofFor = (x, z) => {
+}
+
+function pointOnBox(bounds, u, v, y) {
+  return [bounds.cx + bounds.ux * u + bounds.vx * v, y, bounds.cz + bounds.uz * u + bounds.vz * v];
+}
+
+function addHipRoof(batch, bounds, y, height, mansard = false) {
+  const hw = bounds.width / 2; const hd = bounds.depth / 2;
+  const ridgeHalf = Math.max(0, (bounds.width - bounds.depth) * 0.28);
+  const a = pointOnBox(bounds, -hw, -hd, y); const b = pointOnBox(bounds, hw, -hd, y);
+  const c = pointOnBox(bounds, hw, hd, y); const d = pointOnBox(bounds, -hw, hd, y);
+  const r1 = pointOnBox(bounds, -ridgeHalf, 0, y + height); const r2 = pointOnBox(bounds, ridgeHalf, 0, y + height);
+  if (!mansard) {
+    batch.quad4(a, b, r2, r1, [0, 0], [bounds.width / 4, 0], [bounds.width / 4, height / 4], [0, height / 4]);
+    batch.quad4(c, d, r1, r2, [0, 0], [bounds.width / 4, 0], [bounds.width / 4, height / 4], [0, height / 4]);
+    batch.tri(d, a, r1, [0, 0], [bounds.depth / 4, 0], [bounds.depth / 8, height / 4]);
+    batch.tri(b, c, r2, [0, 0], [bounds.depth / 4, 0], [bounds.depth / 8, height / 4]);
+    return;
+  }
+  const insetU = hw * 0.72; const insetV = hd * 0.58; const breakY = y + height * 0.68;
+  const ia = pointOnBox(bounds, -insetU, -insetV, breakY); const ib = pointOnBox(bounds, insetU, -insetV, breakY);
+  const ic = pointOnBox(bounds, insetU, insetV, breakY); const id = pointOnBox(bounds, -insetU, insetV, breakY);
+  batch.quad4(a, b, ib, ia, [0, 0], [1, 0], [1, 1], [0, 1]);
+  batch.quad4(b, c, ic, ib, [0, 0], [1, 0], [1, 1], [0, 1]);
+  batch.quad4(c, d, id, ic, [0, 0], [1, 0], [1, 1], [0, 1]);
+  batch.quad4(d, a, ia, id, [0, 0], [1, 0], [1, 1], [0, 1]);
+  const upper = { ...bounds, width: insetU * 2, depth: insetV * 2 };
+  addHipRoof(batch, upper, breakY, height * 0.32, false);
+}
+
+function addFlatRoof(batch, poly, top) {
+  const contour = poly[0].map(([x, z]) => new THREE.Vector2(x, z));
+  const holes = poly.slice(1).map((ring) => ring.map(([x, z]) => new THREE.Vector2(x, z)));
+  const points = contour.concat(...holes);
+  for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, holes)) {
+    const va = points[a]; const vb = points[b]; const vc = points[c];
+    batch.tri([vc.x, top, vc.y], [vb.x, top, vb.y], [va.x, top, va.y],
+      [vc.x / 4, vc.y / 4], [vb.x / 4, vb.y / 4], [va.x / 4, va.y / 4]);
+  }
+}
+
+function bandForHeight(localBottom, localTop, height, shopfront = false) {
+  const bands = [];
+  let y = localBottom;
+  const groundTop = Math.min(localTop, localBottom + 4.2);
+  if (groundTop > y + 0.1) bands.push([shopfront ? 'shopfront' : 'plain', y, groundTop]);
+  y = groundTop;
+  const pianoTop = Math.min(localTop, localBottom + 8.0);
+  if (pianoTop > y + 0.1) bands.push(['pianoNobile', y, pianoTop]);
+  y = pianoTop;
+  const atticBottom = Math.max(y, localTop - Math.min(2.8, height * 0.18));
+  if (atticBottom > y + 0.1) bands.push(['plain', y, atticBottom]);
+  if (localTop > atticBottom + 0.1) bands.push(['attic', atticBottom, localTop]);
+  return bands;
+}
+
+export function buildImportedBuildings(group, collision, map, terrain, chunks, visualOverrides = null) {
+  const wallSets = new Map();
+  const roofSets = new Map();
+  const centralCell = chunks.cellOf(0, 0);
+  const centralShadowMass = new Batch();
+  const excluded = siteExclusions(visualOverrides);
+  const recipes = facadeRecipes(visualOverrides);
+  const detailMat = getMaterial('concrete', { color: '#c8bfae' });
+  const entryFor = (sets, material, x, z) => {
+    let byCell = sets.get(material);
+    if (!byCell) sets.set(material, (byCell = new Map()));
     const cell = chunks.cellOf(x, z);
-    let batch = roofs.get(cell);
-    if (!batch) roofs.set(cell, (batch = new Batch()));
+    let batch = byCell.get(cell);
+    if (!batch) byCell.set(cell, (batch = new Batch()));
     return batch;
   };
 
-  let count = 0;
-  let courtyards = 0;
+  let count = 0; let courtyards = 0; let pitchedRoofs = 0; let detailed = 0;
   for (const building of map.buildings) {
-    if (building.landmark) continue;
-    const style = hashId(building.id) % FACADE_STYLES.length;
+    if (excluded.has(building.id)) continue;
+    const recipe = recipes.get(building.id) || null;
+    const style = facadeStyle(building, recipe);
+    const litBuilding = hashId(building.id) % 5 === 0;
     for (const poly of decodedPolygons(building)) {
       if (!poly[0]?.length) continue;
       if (poly.length > 1) courtyards += poly.length - 1;
-      const b = boundsOfPolygon(poly);
-      const cx = (b.minX + b.maxX) / 2; const cz = (b.minZ + b.maxZ) / 2;
-      const base = terrain.heightAt(cx, cz) + (building.minHeight || 0);
-      const height = Math.max(2.5, building.height - (building.minHeight || 0));
-      const top = base + height;
-      const wallBatch = entryFor(walls, style, cx, cz);
+      const bounds = boundsOfPolygon(poly);
+      const cx = (bounds.minX + bounds.maxX) / 2; const cz = (bounds.minZ + bounds.maxZ) / 2;
+      const detailedHere = onHeroRoute(cx, cz, map, visualOverrides);
+      const lit = detailedHere && litBuilding;
+      const taggedShape = building.roof?.shape;
+      const modern = recipe === 'omega' || /commercial|office|industrial|warehouse/.test(building.use || '')
+        || (building.levels || 0) >= 7;
+      let roofShape = taggedShape || (modern ? 'flat' : 'gabled');
+      const oriented = orientedBounds(poly[0]);
+      const rectangular = oriented && poly.length === 1 && poly[0].length <= 6
+        && ringArea(poly[0]) / Math.max(1, oriented.width * oriented.depth) > 0.9;
+      if (!rectangular && roofShape !== 'flat' && roofShape !== 'skillion') roofShape = 'flat';
+      const defaultRoof = Math.max(2.2, Math.min(7.5, Math.min(oriented?.depth || 8, 16) * 0.42));
+      const roofHeight = roofShape === 'flat' ? 0 : (building.roof?.height || defaultRoof);
+      const totalHeight = Math.max(2.5, building.height - (building.minHeight || 0));
+      const wallHeight = Math.max(2.5, totalHeight - roofHeight);
+      const foundation = terrain.heightAt(cx, cz) + (building.minHeight || 0);
+      const top = foundation + wallHeight;
+      const hasShopfront = Boolean(recipe || building.name)
+        || /commercial|retail|office/.test(building.use || '');
+      const bands = detailedHere
+        ? bandForHeight(foundation, top, wallHeight, hasShopfront)
+        : [['plain', foundation, top]];
+
       for (const ring of poly) {
         for (let i = 1; i < ring.length; i++) {
           const [ax, az] = ring[i - 1]; const [bx, bz] = ring[i];
-          const len = Math.hypot(bx - ax, bz - az);
+          const dx = bx - ax; const dz = bz - az; const len = Math.hypot(dx, dz);
           if (len < 0.1) continue;
           const ay = terrain.heightAt(ax, az) + (building.minHeight || 0);
           const by = terrain.heightAt(bx, bz) + (building.minHeight || 0);
-          wallBatch.quad4(
-            [ax, ay, az], [bx, by, bz], [bx, top, bz], [ax, top, az],
-            [0, 0], [len / 3.1, 0], [len / 3.1, height / 3.4], [0, height / 3.4],
-          );
-          const dx = bx - ax; const dz = bz - az;
+          for (const [band, bandBottom, bandTop] of bands) {
+            const material = facadeMaterial(style, band, lit);
+            const batch = entryFor(wallSets, material, cx, cz);
+            const bottomA = Math.max(ay, bandBottom); const bottomB = Math.max(by, bandBottom);
+            if (bandTop <= Math.max(bottomA, bottomB) + 0.05) continue;
+            // polygon-clipping normalizes outer rings counter-clockwise and
+            // courtyard rings clockwise. In both cases the empty side of
+            // the boundary is to the right, so emit B->A to point the wall
+            // normal out of the occupied building volume. A->B made whole
+            // street walls disappear under back-face culling, leaving only
+            // their cornices and roofs apparently floating over the square.
+            batch.quad4(
+              [bx, bottomB, bz], [ax, bottomA, az], [ax, bandTop, az], [bx, bandTop, bz],
+              [0, bandBottom / 3.4], [len / 3.1, bandBottom / 3.4],
+              [len / 3.1, bandTop / 3.4], [0, bandTop / 3.4],
+            );
+          }
+          if (chunks.cellOf(cx, cz) === centralCell) {
+            centralShadowMass.quad4(
+              [bx, by, bz], [ax, ay, az], [ax, top, az], [bx, top, bz],
+              [0, 0], [len / 4, 0], [len / 4, wallHeight / 4], [0, wallHeight / 4],
+            );
+          }
           const oblique = Math.min(Math.abs(dx), Math.abs(dz)) / len > 0.18;
+          const collisionTop = top + roofHeight;
           if (oblique && len > 4) {
-            addRotatedBox(
-              collision,
-              (ax + bx) / 2, (az + bz) / 2,
-              len, 0.38, Math.atan2(-dz, dx),
-              Math.min(ay, by), top - Math.min(ay, by), 'building', 'stone',
-            );
+            addRotatedBox(collision, (ax + bx) / 2, (az + bz) / 2, len, 0.38,
+              Math.atan2(-dz, dx), Math.min(ay, by), collisionTop - Math.min(ay, by), 'building', 'stone');
           } else {
-            collision.add(
-              (ax + bx) / 2, (az + bz) / 2,
-              Math.abs(dx) + 0.38, Math.abs(dz) + 0.38,
-              Math.min(ay, by), top - Math.min(ay, by), 'building', 'stone',
-            );
+            collision.add((ax + bx) / 2, (az + bz) / 2, Math.abs(dx) + 0.38, Math.abs(dz) + 0.38,
+              Math.min(ay, by), collisionTop - Math.min(ay, by), 'building', 'stone');
+          }
+          if (detailedHere && ring === poly[0] && len > 2.5) {
+            const rot = Math.atan2(-dz, dx);
+            const details = chunks.get(detailMat, (ax + bx) / 2, (az + bz) / 2, TIER.DETAIL);
+            details.box((ax + bx) / 2, top - 0.5, (az + bz) / 2, len + 0.25, 0.34, 0.42, rot);
+            if (wallHeight > 9) details.box((ax + bx) / 2, foundation + 4.05, (az + bz) / 2,
+              len + 0.12, 0.18, 0.25, rot);
           }
         }
       }
 
-      const contour = poly[0].map(([x, z]) => new THREE.Vector2(x, z));
-      const holes = poly.slice(1).map((ring) => ring.map(([x, z]) => new THREE.Vector2(x, z)));
-      const points = contour.concat(...holes);
-      for (const [a, b0, c] of THREE.ShapeUtils.triangulateShape(contour, holes)) {
-        const va = points[a]; const vb = points[b0]; const vc = points[c];
-        roofFor(cx, cz).tri(
-          [vc.x, top, vc.y], [vb.x, top, vb.y], [va.x, top, va.y],
-          [vc.x / 4, vc.y / 4], [vb.x / 4, vb.y / 4], [va.x / 4, va.y / 4],
-        );
+      const roofMat = roofMaterial(building);
+      const roofBatch = entryFor(roofSets, roofMat, cx, cz);
+      const emitRoof = (target) => {
+        if (roofShape === 'gabled' && rectangular) {
+          target.gable(oriented.cx, top, oriented.cz, oriented.width, oriented.depth,
+            roofHeight, oriented.rotation, 4);
+        } else if (['hipped', 'pyramidal', 'mansard'].includes(roofShape) && rectangular) {
+          addHipRoof(target, oriented, top, roofHeight, roofShape === 'mansard');
+        } else if (roofShape === 'skillion' && rectangular) {
+          const hw = oriented.width / 2; const hd = oriented.depth / 2;
+          const a = pointOnBox(oriented, -hw, -hd, top); const b = pointOnBox(oriented, hw, -hd, top);
+          const c = pointOnBox(oriented, hw, hd, top + roofHeight); const d = pointOnBox(oriented, -hw, hd, top + roofHeight);
+          target.quad4(a, b, c, d, [0, 0], [oriented.width / 4, 0],
+            [oriented.width / 4, oriented.depth / 4], [0, oriented.depth / 4]);
+        } else {
+          addFlatRoof(target, poly, top);
+        }
+      };
+      emitRoof(roofBatch);
+      if (chunks.cellOf(cx, cz) === centralCell) emitRoof(centralShadowMass);
+      if (roofShape === 'gabled' && rectangular) {
+        pitchedRoofs++;
+      } else if (['hipped', 'pyramidal', 'mansard'].includes(roofShape) && rectangular) {
+        pitchedRoofs++;
+      } else if (roofShape === 'skillion' && rectangular) {
+        pitchedRoofs++;
       }
+      if (detailedHere) detailed++;
       count++;
     }
   }
 
   let meshes = 0;
-  const centralCell = chunks.cellOf(0, 0);
-  for (let style = 0; style < walls.length; style++) {
-    const material = facadeMaterial(style);
-    for (const [cell, batch] of walls[style]) {
+  for (const [material, cells] of wallSets) {
+    for (const [cell, batch] of cells) {
       const geo = batch.geometry();
       if (!geo) continue;
       const mesh = new THREE.Mesh(geo, material);
-      mesh.name = `mass:facade-${style}`;
-      // Keep cascaded shadows on the historic-core bucket. Distant massing
-      // still receives shadows but does not get submitted three extra times.
-      mesh.castShadow = cell === centralCell;
+      mesh.name = 'mass:facade';
+      mesh.castShadow = false;
       mesh.receiveShadow = true; group.add(mesh); meshes++;
     }
   }
-  for (const batch of roofs.values()) {
-    const geo = batch.geometry();
-    if (!geo) continue;
-    const mesh = new THREE.Mesh(geo, roofMat);
-    mesh.name = 'mass:roof';
-    // Roof silhouettes are already grounded by facade shadows; excluding
-    // these dense triangulations keeps the cascaded submission below budget.
-    mesh.castShadow = false; mesh.receiveShadow = true; group.add(mesh); meshes++;
+  for (const [material, cells] of roofSets) {
+    for (const batch of cells.values()) {
+      const geo = batch.geometry();
+      if (!geo) continue;
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.name = 'mass:roof';
+      mesh.castShadow = false; mesh.receiveShadow = true; group.add(mesh); meshes++;
+    }
   }
-  return { count, courtyards, meshes };
+  const shadowGeometry = centralShadowMass.geometry();
+  if (shadowGeometry) {
+    const shadowMaterial = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
+    shadowMaterial.name = 'building-shadow-proxy';
+    const mesh = new THREE.Mesh(shadowGeometry, shadowMaterial);
+    mesh.name = 'mass:building-shadow-proxy';
+    mesh.castShadow = true;
+    mesh.receiveShadow = false;
+    group.add(mesh);
+    meshes++;
+  }
+  return { count, courtyards, meshes, pitchedRoofs, detailed };
 }
 
 export function buildImportedMinimap(map) {
