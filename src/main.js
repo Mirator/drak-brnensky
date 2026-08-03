@@ -616,6 +616,30 @@ function readCanvasPng() {
   return out.toDataURL('image/png');
 }
 
+/**
+ * Wait for a shader warm-up to finish, but never let it hold the game shut.
+ *
+ * `compileAsync()` resolves off KHR_parallel_shader_compile status queries;
+ * where that extension is missing it falls back to a poll that only ends when
+ * every program reports ready. A driver that never says so would leave the
+ * player staring at the loading bar, and a warm-up is an optimisation — the
+ * worst case for skipping it is the hitching we had before. So it is a race:
+ * whatever is still compiling finishes on its own and simply gets paid for on
+ * first draw.
+ */
+async function finishCompiling(pending, budgetMs = 8000) {
+  if (!pending) return;
+  let timer = null;
+  try {
+    await Promise.race([
+      pending,
+      new Promise((resolve) => { timer = setTimeout(resolve, budgetMs); }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
 function showBootError(error) {
   console.error('Game initialization failed', error);
   state.mode = 'error';
@@ -723,8 +747,19 @@ async function boot() {
     // SwiftShader-based automated QA is CPU rendering. Deferring its shader
     // compilation to the first requested frame keeps it bounded; desktop GPU
     // play still receives the usual warm-up.
-    if (!AUTOMATED_QA || PRODUCTION_RENDER_QA) renderer.compile(scene, camera);
+    const warmShaders = !AUTOMATED_QA || PRODUCTION_RENDER_QA;
+    /* Through the composer's buffer, not the default framebuffer, and
+     * awaited — see PostFX#prewarm. Compiling against the wrong target warms
+     * program variants no frame uses and leaves the real ones to build on
+     * first draw, which is what a wave start used to pay for. */
+    if (warmShaders) await finishCompiling(render.prewarm(scene, camera));
     verifyPostStack();
+    /* If the probe just disqualified the post stack we render straight to the
+     * default framebuffer after all, which wants the sRGB variants the
+     * prewarm above deliberately skipped. */
+    if (warmShaders && !postStackOk) {
+      await finishCompiling(renderer.compileAsync(scene, camera));
+    }
 
     await step(100, 'hotovo');
     loadEl.classList.add('done');

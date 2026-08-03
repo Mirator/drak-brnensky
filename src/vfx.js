@@ -13,7 +13,7 @@ import { DecalSystem } from './vfx/decals.js';
 import { TracerSystem } from './vfx/beams.js';
 import { FireballSystem, ShockwaveSystem } from './vfx/explosions.js';
 import { FlameSystem } from './vfx/flame.js';
-import { createRift } from './vfx/rift.js';
+import { createRift, warmRiftProgram } from './vfx/rift.js';
 
 /* ==================================================================
    VFX — projectiles, particles, decals, explosions, flame, rifts.
@@ -140,6 +140,10 @@ export class VFX {
     // end of boot, and a material created later would compile mid-fight.
     this._pickupKit(0x7ddf64);   // health
     this._pickupKit(0x7de3ff);   // ammo
+    // Same reasoning, one system further out: a rift's material cannot be
+    // built until the rift exists, so this parks its program in the scene for
+    // the boot prewarm to find. See warmRiftProgram().
+    this._riftWarm = warmRiftProgram(scene, this.shared);
     this.rifts = [];
     this.dying = [];        // rift meshes mid-collapse
     this.patches = [];        // lingering burning ground
@@ -1660,6 +1664,12 @@ export class VFX {
     this.atlas.dispose();
     this.decalAtlas.dispose();
     this.glowTex.dispose();
+    if (this._riftWarm) {
+      this.scene.remove(this._riftWarm);
+      this._riftWarm.geometry.dispose();
+      this._riftWarm.material.dispose();
+      this._riftWarm = null;
+    }
   }
 }
 

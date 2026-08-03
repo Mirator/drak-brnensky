@@ -569,6 +569,47 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
     setSize: resize,
 
     /**
+     * Compile every material in the scene for the buffer the composer
+     * actually shades into, and resolve once the driver has finished. Call
+     * it once, at the end of boot, and await it — the loading screen is the
+     * only place in the game that can absorb the cost.
+     *
+     * Two things make this different from a bare
+     * `renderer.compile(scene, camera)`, and both of them used to show up as
+     * a hitch on the frame a wave starts on:
+     *
+     * 1. It binds the buffer. `compile()` bakes the *currently bound*
+     *    target's output colour space into each program's cache key, so with
+     *    nothing bound it produces sRGB variants for the default
+     *    framebuffer, while every gameplay frame shades into this stack's
+     *    half-float buffer and wants the working-colour-space ones. The
+     *    warm-up was building programs no frame ever used, and leaving the
+     *    real ones to be built on first draw.
+     * 2. It waits. `compile()` issues the link and returns; a WebGL driver
+     *    finishes it on its own threads and only blocks when the program is
+     *    first *used*. `compileAsync()` polls KHR_parallel_shader_compile
+     *    until every program reports ready, so nothing is left half-built.
+     *
+     * Materials are collected with `scene.traverse`, not `traverseVisible`,
+     * so the pooled creatures, idle particle layers and unused decal atlas
+     * are all included even though they sit hidden until first use.
+     *
+     * @returns {Promise} resolves when every material is ready to draw.
+     */
+    prewarm(warmScene = scene, warmCamera = camera) {
+      const previous = renderer.getRenderTarget();
+      renderer.setRenderTarget(sceneTarget);
+      try {
+        /* compileAsync() creates the programs synchronously and defers only
+         * the readiness polling, so the buffer has to be bound for this call
+         * but not for the wait. */
+        return renderer.compileAsync(warmScene, warmCamera);
+      } finally {
+        renderer.setRenderTarget(previous);
+      }
+    },
+
+    /**
      * The DOF target. `amount` 0..1, `focus` in metres. Ramped towards the
      * request in `render()` so entering and leaving aim does not pop.
      *
