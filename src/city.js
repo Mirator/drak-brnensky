@@ -330,7 +330,12 @@ function landmarkRotation(map, key, legacyAxis) {
   return halfTurn((legacyAxis === 'z' ? Math.PI / 2 : 0) - bestAngle);
 }
 
-function landmarkTransforms(map, terrain, places = PLACES) {
+function median(values) {
+  const sorted = values.slice().sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)] || 0;
+}
+
+function landmarkTransforms(map, terrain, places = PLACES, visualOverrides = null) {
   const anchors = {
     petrov: [-108, 168, 6.6],
     spilberk: [-268, 44, 15],
@@ -355,23 +360,24 @@ function landmarkTransforms(map, terrain, places = PLACES) {
     const legacyAxis = largest && largest.rect[3] > largest.rect[2] ? 'z' : 'x';
     const radius = Math.max(12, Math.min(60,
       largest ? Math.max(largest.rect[2], largest.rect[3]) * 0.35 : 20));
-    const slopeX = (
-      terrain.heightAt(place.x + radius, place.z) - terrain.heightAt(place.x - radius, place.z)
-    ) / (radius * 2);
-    const slopeZ = (
-      terrain.heightAt(place.x, place.z + radius) - terrain.heightAt(place.x, place.z - radius)
-    ) / (radius * 2);
+    const foundation = visualOverrides?.sites?.[key]?.foundation === 'pad'
+      ? median([
+        terrain.heightAt(place.x, place.z),
+        terrain.heightAt(place.x + radius, place.z),
+        terrain.heightAt(place.x - radius, place.z),
+        terrain.heightAt(place.x, place.z + radius),
+        terrain.heightAt(place.x, place.z - radius),
+      ])
+      : terrain.heightAt(place.x, place.z);
     out[key] = {
       x: place.x - ox,
       z: place.z - oz,
-      y: terrain.heightAt(place.x, place.z) - base,
+      y: foundation - base,
       originX: ox,
       originZ: oz,
       targetX: place.x,
       targetZ: place.z,
       rotation: landmarkRotation(map, key, legacyAxis),
-      slopeX,
-      slopeZ,
     };
   }
   out.svoboda = { x: 0, z: 0, y: terrain.heightAt(places.svoboda.x, places.svoboda.z) };
@@ -391,7 +397,7 @@ function countScene(group) {
   return { sceneTriangles: Math.round(sceneTriangles), shadowTriangles: Math.round(shadowTriangles), meshes };
 }
 
-function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
+function buildGeospatialCity(scene, collision, { map, terrain, visualOverrides = null }, rngSeed) {
   const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   const rng = new Rng(rngSeed);
   const breakables = createBreakables();
@@ -400,22 +406,33 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
   // Match the legacy ~140 m spatial buckets so frustum and detail culling stay
   // effective across the expanded 1.5 km map.
   const chunks = new Chunks({ cells: 11, detailRadius: 180 });
-  const buildingChunks = new Chunks({ cells: 8, detailRadius: 180 });
+  // Roads and plaza triangles are already sampled against the heightfield at
+  // four-metre spans, so their render buckets need not mirror every terrain
+  // chunk. A coarser grid keeps plan culling useful without paying hundreds
+  // of tiny, same-material draw calls in central views.
+  const planChunks = new Chunks({ cells: 5, detailRadius: 180 });
+  const buildingChunks = new Chunks({ cells: 3, detailRadius: 180 });
 
-  const importedLayout = installImportedLayout(map);
+  const importedLayout = installImportedLayout(map, visualOverrides);
   collision.setTerrain(terrain);
   const terrainInfo = buildTerrain(cityGroup, terrain);
   const cameraAt = trackCamera(terrainInfo.meshes[0]);
-  const plan = buildImportedPlan(cityGroup, map, terrain, chunks);
+  const plan = buildImportedPlan(cityGroup, map, terrain, planChunks, visualOverrides);
+  const planChunkMeshes = planChunks.finish(cityGroup);
   const flagAt = createFlagAt(plan.flags);
   const navigation = new NavigationField(flagAt, terrain);
   navigation.rebuild(map.start.x, map.start.z);
-  const buildingInfo = buildImportedBuildings(cityGroup, collision, map, terrain, buildingChunks);
+  const buildingInfo = buildImportedBuildings(
+    cityGroup, collision, map, terrain, buildingChunks, visualOverrides,
+  );
+  const buildingChunkMeshes = buildingChunks.finish(cityGroup);
+  buildingChunks.update(map.start.x, map.start.z);
 
   const stoneMat = getMaterial('stone', { base: '#8d8577', mortar: '#6e675c', scale: 2 });
   const roofMat = getMaterial('roof');
   const landmarkInfo = landmarksModule.buildLandmarks(cityGroup, collision, {
-    stoneMat, roofMat, rng, transforms: landmarkTransforms(map, terrain, importedLayout.places),
+    stoneMat, roofMat, rng,
+    transforms: landmarkTransforms(map, terrain, importedLayout.places, visualOverrides),
   });
 
   // Retain the procedural street life, but project every generated element
@@ -459,10 +476,13 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
     mapSize: MAP_SIZE,
     buildings: buildingInfo.count,
     courtyards: buildingInfo.courtyards,
+    pitchedRoofs: buildingInfo.pitchedRoofs,
+    detailedBuildings: buildingInfo.detailed,
     terrainChunks: terrainInfo.meshes.length,
-    mapMeshes: plan.meshes,
+    mapMeshes: planChunkMeshes,
     chunkMeshes,
-    detailMeshes: chunks.detailMeshes.length,
+    buildingChunkMeshes,
+    detailMeshes: chunks.detailMeshes.length + buildingChunks.detailMeshes.length,
     cityMeshes: sceneCounts.meshes,
     ...sceneCounts,
     colliders: collision.boxes.length,
@@ -530,8 +550,9 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
     lodStats() {
       let visible = 0;
       for (const d of chunks.detailMeshes) if (d.mesh.visible) visible++;
+      for (const d of buildingChunks.detailMeshes) if (d.mesh.visible) visible++;
       return {
-        detailMeshes: chunks.detailMeshes.length,
+        detailMeshes: chunks.detailMeshes.length + buildingChunks.detailMeshes.length,
         detailVisible: visible,
         cameraTracked: cameraAt.seen,
         cameraAt: [Math.round(cameraAt.x), Math.round(cameraAt.z)],
@@ -548,7 +569,8 @@ function buildGeospatialCity(scene, collision, { map, terrain }, rngSeed) {
       for (const tram of trams) tram.update(dt);
       if (props.update) props.update(dt, t);
       chunks.update(viewPos ? viewPos.x : cameraAt.x, viewPos ? viewPos.z : cameraAt.z);
-      landmarkInfo.update?.(dt, t);
+      buildingChunks.update(viewPos ? viewPos.x : cameraAt.x, viewPos ? viewPos.z : cameraAt.z);
+      landmarkInfo.update?.(dt, t, viewPos);
     },
   };
 }

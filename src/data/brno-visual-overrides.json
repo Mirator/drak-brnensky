@@ -1,0 +1,76 @@
+{
+  "schema": 1,
+  "mapSchema": 2,
+  "heroRoute": ["svoboda", "radnice", "zelnyTrh", "petrov"],
+  "sites": {
+    "svoboda": {
+      "areaId": "way/4934858",
+      "foundation": "terrain",
+      "kerb": true,
+      "excludeBuildingIds": [],
+      "facadeRecipes": {
+        "relation/9053253": "mamlasu",
+        "way/49999546": "lipy",
+        "way/49999799": "omega"
+      }
+    },
+    "radnice": {
+      "anchorId": "way/50002035",
+      "foundation": "pad",
+      "excludeBuildingIds": ["way/50002035", "way/692061750"]
+    },
+    "zelnyTrh": {
+      "areaId": "way/8153695",
+      "foundation": "terrain",
+      "excludeBuildingIds": []
+    },
+    "petrov": {
+      "anchorId": "way/32877797",
+      "foundation": "pad",
+      "excludeBuildingIds": [
+        "way/32877797",
+        "way/377366823",
+        "way/377366824",
+        "way/377366825",
+        "way/377366826",
+        "way/377366827",
+        "way/962125777"
+      ]
+    },
+    "spilberk": {
+      "anchorId": "relation/115794",
+      "foundation": "pad",
+      "excludeBuildingIds": [
+        "way/316937661", "way/431280008", "way/431280036",
+        "way/431280038", "way/50171110"
+      ]
+    },
+    "mahen": {
+      "anchorId": "way/16371581",
+      "foundation": "pad",
+      "excludeBuildingIds": ["way/16371581"]
+    },
+    "janacek": {
+      "anchorId": "way/16371579",
+      "foundation": "pad",
+      "excludeBuildingIds": ["way/16371579"]
+    },
+    "nadrazi": {
+      "anchorId": "way/27705873",
+      "foundation": "pad",
+      "excludeBuildingIds": [
+        "way/50315401", "way/50315430", "way/50315431", "way/50315432",
+        "way/50315433", "way/50315435", "way/547433701", "way/547433702",
+        "way/56402016", "way/56402017", "way/56402019", "way/56402020",
+        "way/8070613", "way/885306483", "way/885306484", "way/885306485",
+        "way/885306486", "way/885306487", "way/885306488", "way/91057641",
+        "way/91057647"
+      ]
+    },
+    "ceska": {
+      "anchorId": "way/147777659",
+      "foundation": "pad",
+      "excludeBuildingIds": ["way/50003357"]
+    }
+  }
+}

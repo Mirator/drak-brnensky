@@ -1,5 +1,6 @@
 const MAP_URL = new URL('../data/brno-map.json', import.meta.url);
 const TERRAIN_URL = new URL('../data/brno-terrain.bin', import.meta.url);
+const VISUAL_OVERRIDES_URL = new URL('../data/brno-visual-overrides.json', import.meta.url);
 
 let cached = null;
 
@@ -99,13 +100,41 @@ async function checked(response, label) {
   return response;
 }
 
+export function validateBrnoArtifacts(map, visualOverrides) {
+  if (map?.schema !== 2) throw new Error(`Unsupported Brno map schema: ${map?.schema}`);
+  if (visualOverrides?.schema !== 1 || visualOverrides.mapSchema !== map.schema) {
+    throw new Error('Brno visual overrides do not match the map schema');
+  }
+  const buildingIds = new Set(map.buildings.map((building) => building.id));
+  const sourceIds = new Set([
+    ...buildingIds,
+    ...map.areas.map((area) => area.id),
+    ...Object.values(map.places).map((place) => place.osmId).filter(Boolean),
+  ]);
+  for (const [key, site] of Object.entries(visualOverrides.sites || {})) {
+    const anchor = site.anchorId || site.areaId;
+    if (anchor && !sourceIds.has(anchor)) throw new Error(`Visual site ${key} references missing anchor ${anchor}`);
+    for (const id of site.excludeBuildingIds || []) {
+      if (!buildingIds.has(id)) throw new Error(`Visual site ${key} excludes missing building ${id}`);
+    }
+    for (const id of Object.keys(site.facadeRecipes || {})) {
+      if (!buildingIds.has(id)) throw new Error(`Visual site ${key} styles missing building ${id}`);
+    }
+  }
+  return true;
+}
+
 export async function loadBrnoData() {
   if (!cached) {
     cached = Promise.all([
       fetch(MAP_URL).then((r) => checked(r, 'Brno map')).then((r) => r.json()),
       fetch(TERRAIN_URL).then((r) => checked(r, 'Brno terrain')).then((r) => r.arrayBuffer()),
+      fetch(VISUAL_OVERRIDES_URL).then((r) => checked(r, 'Brno visual overrides')).then((r) => r.json()),
     ])
-      .then(([map, terrain]) => ({ map, terrain: decodeTerrain(terrain) }))
+      .then(([map, terrain, visualOverrides]) => {
+        validateBrnoArtifacts(map, visualOverrides);
+        return { map, terrain: decodeTerrain(terrain), visualOverrides };
+      })
       .catch((error) => {
         cached = null;
         throw error;

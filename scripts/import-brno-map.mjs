@@ -195,6 +195,31 @@ function numeric(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+function finiteTag(tags, key, { min = -Infinity, max = Infinity, integer = false } = {}) {
+  const value = numeric(tags[key]);
+  if (value === null || value < min || value > max) return null;
+  return integer ? Math.round(value) : Math.round(value * 10) / 10;
+}
+
+function textTag(tags, key) {
+  const value = tags[key];
+  return value === undefined || value === null || value === '' ? null : String(value);
+}
+
+function normalizedRoof(tags) {
+  const supported = new Set(['flat', 'gabled', 'hipped', 'mansard', 'skillion', 'pyramidal']);
+  const tagged = textTag(tags, 'roof:shape');
+  const shape = supported.has(tagged) ? tagged : null;
+  return {
+    shape,
+    height: finiteTag(tags, 'roof:height', { min: 0.2, max: 40 }),
+    direction: finiteTag(tags, 'roof:direction', { min: 0, max: 360 }),
+    angle: finiteTag(tags, 'roof:angle', { min: 5, max: 85 }),
+    material: textTag(tags, 'roof:material'),
+    colour: textTag(tags, 'roof:colour') || textTag(tags, 'roof:color'),
+  };
+}
+
 export function buildingHeight(tags, id) {
   const explicit = numeric(tags.height);
   if (explicit !== null && explicit >= 2 && explicit <= 200) return Math.round(explicit * 10) / 10;
@@ -303,16 +328,6 @@ export function chooseStart(areas, buildings, trams, places) {
   throw new Error('Could not find a collision- and rail-safe start on Náměstí Svobody');
 }
 
-function hasPart(parent, parts) {
-  const outer = parent.polygons[0]?.[0];
-  if (!outer) return false;
-  for (const part of parts) {
-    const c = polygonCentre(part.polygons);
-    if (c && pointInRing([c[0] / 10, c[1] / 10], outer)) return true;
-  }
-  return false;
-}
-
 function normalizedBuilding(feature, tags) {
   const polygons = localPolygons(feature.geometry);
   if (!polygons.length) return null;
@@ -326,9 +341,78 @@ function normalizedBuilding(feature, tags) {
     polygons,
     height: buildingHeight(tags, id),
     minHeight: Math.max(0, numeric(tags.min_height) || 0),
+    levels: finiteTag(tags, 'building:levels', { min: 1, max: 50, integer: true }),
+    use: textTag(tags, 'building') || textTag(tags, 'building:part') || 'yes',
+    material: textTag(tags, 'building:material'),
+    colour: textTag(tags, 'building:colour') || textTag(tags, 'building:color'),
+    roof: normalizedRoof(tags),
+    name: textTag(tags, 'name'),
+    address: textTag(tags, 'addr:housenumber'),
     part: Boolean(tags['building:part']),
+    parentId: null,
     landmark,
   };
+}
+
+function cleanQuantizedPolygons(polygons) {
+  return (polygons || []).map((polygon) => polygon.map((ring) => {
+    const out = [];
+    for (const point of ring) {
+      const q = [Math.round(point[0]), Math.round(point[1])];
+      const previous = out[out.length - 1];
+      if (!previous || previous[0] !== q[0] || previous[1] !== q[1]) out.push(q);
+    }
+    if (out.length > 2) {
+      const first = out[0]; const last = out[out.length - 1];
+      if (first[0] !== last[0] || first[1] !== last[1]) out.push([...first]);
+    }
+    return out;
+  }).filter((ring) => ring.length >= 4)).filter((polygon) => polygon.length);
+}
+
+/** Keep building parts and only remove their actual area from the parent shell. */
+export function resolveBuildingParts(buildings) {
+  const parents = buildings.filter((building) => !building.part);
+  const parts = buildings.filter((building) => building.part);
+  const byParent = new Map();
+  for (const part of parts) {
+    const centre = polygonCentre(part.polygons);
+    if (!centre) continue;
+    let owner = null;
+    let ownerArea = Infinity;
+    for (const parent of parents) {
+      const outer = parent.polygons[0]?.[0];
+      if (!outer || !pointInRing([centre[0] / 10, centre[1] / 10], outer)) continue;
+      let area = 0;
+      for (let i = 1; i < outer.length; i++) {
+        area += outer[i - 1][0] * outer[i][1] - outer[i][0] * outer[i - 1][1];
+      }
+      area = Math.abs(area);
+      if (area < ownerArea) { owner = parent; ownerArea = area; }
+    }
+    if (!owner) continue;
+    part.parentId = owner.id;
+    if (!byParent.has(owner.id)) byParent.set(owner.id, []);
+    byParent.get(owner.id).push(part);
+  }
+
+  const resolved = [...parts];
+  for (const parent of parents) {
+    const children = byParent.get(parent.id) || [];
+    if (!children.length) {
+      resolved.push(parent);
+      continue;
+    }
+    let remainder;
+    try {
+      remainder = polygonClipping.difference(parent.polygons, ...children.map((part) => part.polygons));
+    } catch {
+      remainder = parent.polygons;
+    }
+    const polygons = cleanQuantizedPolygons(remainder);
+    if (polygons.length) resolved.push({ ...parent, polygons, remainder: true });
+  }
+  return resolved;
 }
 
 function areaKind(tags) {
@@ -345,6 +429,7 @@ export function normalizeOsm(osm, sourceDate = null) {
   const buildings = [];
   const roads = [];
   const trams = [];
+  const tramStops = [];
   const areas = [];
   const candidates = [];
 
@@ -366,6 +451,11 @@ export function normalizeOsm(osm, sourceDate = null) {
           kind: tags.highway,
           name: name || null,
           width: roadWidth(tags),
+          surface: textTag(tags, 'surface'),
+          lanes: finiteTag(tags, 'lanes', { min: 1, max: 20, integer: true }),
+          sidewalk: textTag(tags, 'sidewalk'),
+          bridge: textTag(tags, 'bridge'),
+          tunnel: textTag(tags, 'tunnel'),
         });
       }
     }
@@ -374,20 +464,33 @@ export function normalizeOsm(osm, sourceDate = null) {
         trams.push({ id: osmId(feature), points, name: name || null });
       }
     }
+    if (feature.geometry?.type === 'Point'
+        && (tags.railway === 'tram_stop' || tags.tram === 'yes'
+          || (tags.public_transport === 'platform' && tags.bus !== 'yes'))) {
+      const position = geometryCentre(feature);
+      if (position) tramStops.push({
+        id: osmId(feature), name: name || null,
+        x: Math.round(position[0] * 10) / 10,
+        z: Math.round(position[1] * 10) / 10,
+      });
+    }
     const kind = areaKind(tags);
     if (kind && /Polygon$/.test(feature.geometry?.type)) {
       const polygons = localPolygons(feature.geometry);
-      if (polygons.length) areas.push({ id: osmId(feature), kind, name: name || null, polygons });
+      if (polygons.length) areas.push({
+        id: osmId(feature), kind, name: name || null,
+        surface: textTag(tags, 'surface'), polygons,
+      });
     }
   }
 
-  const parts = buildings.filter((b) => b.part);
   const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
   const stable = (a, b) => compareStrings(a.id, b.id)
     || compareStrings(JSON.stringify(a.points || a.polygons), JSON.stringify(b.points || b.polygons));
-  const filteredBuildings = buildings.filter((b) => b.part || !hasPart(b, parts)).sort(stable);
+  const filteredBuildings = resolveBuildingParts(buildings).sort(stable);
   roads.sort(stable);
   trams.sort(stable);
+  tramStops.sort((a, b) => compareStrings(a.id, b.id));
   areas.sort(stable);
   candidates.sort((a, b) => compareStrings(osmId(a.feature), osmId(b.feature)));
   const places = {};
@@ -404,30 +507,9 @@ export function normalizeOsm(osm, sourceDate = null) {
     };
   }
 
-  // Hand-built landmark campuses often consist of unnamed building parts.
-  // Reserve the complete local massing around the fixed OSM anchor so none of
-  // those parts are rendered underneath the detailed procedural model.
-  const landmarkRadii = {
-    petrov: 52, spilberk: 72, radnice: 24, zelnyTrh: 14,
-    mahen: 38, janacek: 44, moravske: 58, nadrazi: 72, ceska: 24,
-  };
-  for (const building of filteredBuildings) {
-    const centre = polygonCentre(building.polygons);
-    if (!centre) continue;
-    const x = centre[0] / 10;
-    const z = centre[1] / 10;
-    for (const [key, radius] of Object.entries(landmarkRadii)) {
-      const place = places[key];
-      if (Math.hypot(x - place.x, z - place.z) <= radius) {
-        building.landmark = key;
-        break;
-      }
-    }
-  }
-
   const start = chooseStart(areas, filteredBuildings, trams, places);
   return {
-    schema: 1,
+    schema: 2,
     metadata: {
       name: 'Central Brno',
       generatedAt: sourceDate || osm.osm3s?.timestamp_osm_base || null,
@@ -447,6 +529,7 @@ export function normalizeOsm(osm, sourceDate = null) {
     places,
     roads,
     trams,
+    tramStops,
     areas,
     buildings: filteredBuildings,
   };
@@ -594,19 +677,10 @@ async function main() {
   let map;
   if (args.compactExisting) {
     if (!existingMap) throw new Error('--compact-existing requires an existing map artifact');
+    if (existingMap.schema !== 2) {
+      throw new Error('--compact-existing requires a schema 2 map; run a normal import first');
+    }
     map = existingMap;
-    for (const road of map.roads) {
-      delete road.surface;
-      delete road.lanes;
-      delete road.bridge;
-      delete road.tunnel;
-    }
-    for (const building of map.buildings) {
-      delete building.levels;
-      delete building.material;
-      delete building.roof;
-      delete building.name;
-    }
   } else {
     const osm = args.osmFile
       ? JSON.parse(await fs.readFile(path.resolve(args.osmFile), 'utf8'))

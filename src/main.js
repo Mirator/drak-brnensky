@@ -89,7 +89,7 @@ const scene = new THREE.Scene();
  * height falloff and sun tint come from AERIAL in render/sky.js. */
 scene.fog = new THREE.FogExp2(0x2e3242, 0.0034);
 
-const camera = new THREE.PerspectiveCamera(74, innerWidth / innerHeight, 0.12, 2400);
+const camera = new THREE.PerspectiveCamera(68, innerWidth / innerHeight, 0.12, 2400);
 camera.position.set(0, 12, 40);
 
 /* ---------------- dusk sky, lighting, IBL ----------------
@@ -430,7 +430,7 @@ function createRenderer() {
   instance.toneMapping = THREE.AgXToneMapping !== undefined
     ? THREE.AgXToneMapping
     : THREE.ACESFilmicToneMapping;
-  instance.toneMappingExposure = instance.toneMapping === THREE.AgXToneMapping ? 1.30 : 1.08;
+  instance.toneMappingExposure = instance.toneMapping === THREE.AgXToneMapping ? 1.15 : 1.02;
   return instance;
 }
 

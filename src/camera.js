@@ -15,7 +15,7 @@ export class ChaseCamera {
     this.height = 1.52;
     this.shake = 0;
     this.shakeDecay = 4.2;
-    this.fovBase = 74;
+    this.fovBase = 68;
     this.pos = new THREE.Vector3();
     this.target = new THREE.Vector3();
     this.aimPoint = new THREE.Vector3();
@@ -93,7 +93,7 @@ export class ChaseCamera {
 
     // fov breathing: narrow while aiming, wide while sprinting
     const speed = Math.hypot(player.vel.x, player.vel.z);
-    const targetFov = this.fovBase + (speed > 8 ? 6 : 0) - (aiming ? 12 : 0);
+    const targetFov = this.fovBase + (speed > 8 ? 4 : 0) - (aiming ? 10 : 0);
     this.camera.fov += (targetFov - this.camera.fov) * (1 - Math.exp(-6 * dt));
     this.camera.updateProjectionMatrix();
 

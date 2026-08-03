@@ -5,11 +5,16 @@ import { createHash } from 'node:crypto';
 import * as THREE from 'three';
 import {
   buildingHeight, chooseStart, normalizeOsm, parseArgs, PINNED_SOURCE_DATE, quantize,
+  resolveBuildingParts,
 } from '../scripts/import-brno-map.mjs';
-import { decodeTerrain, Heightfield, geoToWorld, worldToGeo } from '../src/city/data.js';
 import {
-  drapeChildren, installImportedLayout, NavigationField, polygonContains, stitchLines,
+  decodeTerrain, Heightfield, geoToWorld, validateBrnoArtifacts, worldToGeo,
+} from '../src/city/data.js';
+import {
+  addDrapedPolygon, addFootprintWalls, addRoad, drapeChildren, facadeMetrics, installImportedLayout,
+  NavigationField, orientedBounds, polygonContains, simplifyRing, stitchLines,
 } from '../src/city/imported.js';
+import { Batch } from '../src/city/mesh.js';
 import {
   PLACES as LEGACY_PLACES,
   PLAZAS as LEGACY_PLAZAS,
@@ -21,6 +26,9 @@ import { transformLandmarkPoint } from '../src/landmarks/detail.js';
 import { CollisionWorld } from '../src/physics.js';
 
 const map = JSON.parse(fs.readFileSync(new URL('../src/data/brno-map.json', import.meta.url), 'utf8'));
+const visualOverrides = JSON.parse(fs.readFileSync(
+  new URL('../src/data/brno-visual-overrides.json', import.meta.url), 'utf8',
+));
 
 function terrainBuffer(width, height, values) {
   const buffer = new ArrayBuffer(32 + width * height * 2);
@@ -38,6 +46,7 @@ function terrainBuffer(width, height, values) {
 }
 
 test('committed Brno artifacts carry bounds, landmarks and separate attribution', () => {
+  assert.equal(map.schema, 2);
   assert.equal(map.metadata.size, 1500);
   assert.deepEqual(map.metadata.bounds, { minX: -750, minZ: -750, maxX: 750, maxZ: 750 });
   for (const key of ['svoboda', 'zelnyTrh', 'radnice', 'petrov', 'spilberk', 'moravske',
@@ -51,8 +60,23 @@ test('committed Brno artifacts carry bounds, landmarks and separate attribution'
   }
   assert.ok(map.buildings.some((building) => building.polygons.some((polygon) => polygon.length > 1)),
     'at least one imported courtyard/hole is preserved');
-  assert.ok(map.buildings.filter((building) => building.landmark).length >= 7,
-    'hand-modelled landmark footprints are marked for runtime exclusion');
+  assert.ok(map.buildings.filter((building) => building.levels).length > 1000);
+  assert.ok(map.buildings.filter((building) => building.roof?.shape).length > 500);
+  assert.ok(map.roads.filter((road) => road.surface).length > 2000);
+  assert.ok(map.tramStops.length > 0);
+  assert.equal(validateBrnoArtifacts(map, visualOverrides), true);
+});
+
+test('hero-site exclusions are explicit and do not erase Petrov neighbours by radius', () => {
+  const petrov = visualOverrides.sites.petrov.excludeBuildingIds;
+  assert.deepEqual(petrov, [
+    'way/32877797', 'way/377366823', 'way/377366824', 'way/377366825',
+    'way/377366826', 'way/377366827', 'way/962125777',
+  ]);
+  assert.equal(petrov.includes('way/32923542'), false);
+  for (const id of Object.keys(visualOverrides.sites.svoboda.facadeRecipes)) {
+    assert.ok(map.buildings.some((building) => building.id === id));
+  }
 });
 
 test('committed Brno artifact hashes match the pinned checksum manifest', () => {
@@ -200,6 +224,121 @@ test('landmark transforms rotate around their authored anchor and follow a fitte
   assert.ok(Math.abs(point.y - 7.6) < 1e-9);
 });
 
+test('draped polygons and roads subdivide terrain spans to four metres', () => {
+  const terrain = { heightAt: (x, z) => x * 0.01 + z * 0.02 };
+  const polygonBatch = new Batch();
+  addDrapedPolygon(() => polygonBatch, [[
+    [0, 0], [16, 0], [16, 12], [0, 12], [0, 0],
+  ]], terrain);
+  const roadBatch = new Batch();
+  addRoad(() => roadBatch, [[0, 0], [12, 0], [12, 9]], 2, terrain);
+  const maxTriangleEdge = (positions) => {
+    let max = 0;
+    for (let i = 0; i < positions.length; i += 9) {
+      const points = [[positions[i], positions[i + 2]], [positions[i + 3], positions[i + 5]],
+        [positions[i + 6], positions[i + 8]]];
+      for (let a = 0; a < 3; a++) for (let b = a + 1; b < 3; b++) {
+        max = Math.max(max, Math.hypot(points[a][0] - points[b][0], points[a][1] - points[b][1]));
+      }
+    }
+    return max;
+  };
+  assert.ok(maxTriangleEdge(polygonBatch.p) <= 4.01);
+  assert.ok(maxTriangleEdge(roadBatch.p) <= 4.5);
+  assert.ok(roadBatch.triangles > 10, 'bend fan and subdivided strips should both be present');
+});
+
+test('oriented roof bounds follow the dominant frontage edge', () => {
+  const bounds = orientedBounds([[0, 0], [12, 12], [8, 16], [-4, 4], [0, 0]]);
+  assert.ok(bounds);
+  assert.ok(Math.abs(bounds.width - Math.hypot(12, 12)) < 0.01);
+  assert.ok(Math.abs(bounds.depth - Math.hypot(4, 4)) < 0.01);
+});
+
+test('imported walls reach the ground at every corner of a sloping footprint', () => {
+  /* 20 x 20 m footprint on a 1-in-5 slope. The foundation is sampled once at
+   * the centre (y = 2), so a ground band clamped to it hangs two metres over
+   * the downhill corner — on the committed map that left 428 of 2048
+   * footprints floating by more than a metre. */
+  const terrain = { heightAt: (x) => x * 0.2 };
+  const ring = [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]];
+  const foundation = terrain.heightAt(10);
+
+  const plain = new Batch();
+  addFootprintWalls(() => plain, [ring], [['plain', foundation, foundation + 12]], terrain, { base: foundation });
+  const lowest = (batch) => {
+    let min = Infinity;
+    for (let i = 1; i < batch.p.length; i += 3) min = Math.min(min, batch.p[i]);
+    return min;
+  };
+  assert.equal(lowest(plain), terrain.heightAt(0));
+
+  // Banded facades keep their flat break lines, but the ground band still
+  // follows the terrain.
+  const banded = new Batch();
+  addFootprintWalls(() => banded, [ring], [
+    ['shopfront', foundation, foundation + 4.2],
+    ['pianoNobile', foundation + 4.2, foundation + 12],
+  ], terrain, { base: foundation });
+  assert.equal(lowest(banded), terrain.heightAt(0));
+  const breaks = new Set();
+  for (let i = 1; i < banded.p.length; i += 3) breaks.add(Math.round(banded.p[i] * 1000));
+  assert.ok(breaks.has(Math.round((foundation + 4.2) * 1000)),
+    'the band break stays level all the way round');
+
+  // min_height lifts the whole shell without reintroducing the gap.
+  const raised = new Batch();
+  addFootprintWalls(() => raised, [ring], [['plain', foundation, foundation + 12]], terrain,
+    { minHeight: 3, base: foundation });
+  assert.equal(lowest(raised), terrain.heightAt(0) + 3);
+});
+
+test('facade rhythm is measured per building, not shared by the whole city', () => {
+  // building:levels is tagged on two thirds of the stock, so most storey
+  // heights are measured; the rest are hashed off the id and stay stable.
+  const measured = facadeMetrics({ id: 'way/1', levels: 4 }, 15.2);
+  assert.ok(Math.abs(measured.floor - 3.8) < 1e-9, 'four levels over 15.2 m is a 3.8 m storey');
+  const tall = facadeMetrics({ id: 'way/1', levels: 6 }, 15.2);
+  assert.ok(tall.floor < measured.floor, 'more levels in the same height means shorter storeys');
+
+  const untagged = ['way/10', 'way/11', 'way/12', 'way/13', 'way/14', 'way/15']
+    .map((id) => facadeMetrics({ id }, 14));
+  assert.ok(new Set(untagged.map((m) => `${m.bay}|${m.floor}`)).size > 1,
+    'untagged neighbours do not all land on one bay grid');
+  for (const m of untagged) {
+    assert.ok(m.floor >= 2.7 && m.floor <= 4.6, `storey ${m.floor} stays plausible`);
+    assert.ok(m.bay >= 2.6 && m.bay <= 3.9, `bay ${m.bay} stays plausible`);
+  }
+  assert.deepEqual(facadeMetrics({ id: 'way/10' }, 14), untagged[0], 'deterministic per id');
+
+  // A degenerate levels tag must not produce a nonsense storey height.
+  assert.ok(facadeMetrics({ id: 'way/2', levels: 40 }, 6).floor >= 2.7);
+});
+
+test('a straight bend contributes no joint geometry, a real corner does', () => {
+  const terrain = { heightAt: () => 0 };
+  const straight = new Batch();
+  addRoad(() => straight, [[0, 0], [3, 0.01], [6, 0]], 8, terrain);
+  const corner = new Batch();
+  addRoad(() => corner, [[0, 0], [3, 0], [3, 3]], 8, terrain);
+  assert.equal(straight.triangles, 4, 'two strip quads, no fan at a 0.4-degree kink');
+  assert.ok(corner.triangles > 4, 'a right-angle bend still gets its wedge filled');
+});
+
+test('a rectangle traced with redundant nodes still reads as a rectangle', () => {
+  // Same 20 x 8 m footprint, once with bare corners and once with the extra
+  // wall-sharing nodes OSM footprints routinely carry.
+  const bare = [[0, 0], [20, 0], [20, 8], [0, 8], [0, 0]];
+  const traced = [[0, 0], [7, 0], [13, 0], [20, 0], [20, 5], [20, 8],
+    [11, 8], [4, 8], [0, 8], [0, 4], [0, 0]];
+  assert.deepEqual(simplifyRing(bare), bare);
+  assert.equal(simplifyRing(traced).length, 5);
+  assert.ok(Math.abs(orientedBounds(simplifyRing(traced)).width - 20) < 0.01);
+  // A genuine corner survives: an L keeps all six of its own vertices.
+  const ell = [[0, 0], [20, 0], [20, 8], [10, 8], [10, 16], [0, 16], [0, 0]];
+  assert.equal(simplifyRing(ell).length, 7);
+});
+
 test('chooseStart validates its fallback when the square footprint is absent', () => {
   const buildings = [{
     polygons: [[[
@@ -233,18 +372,37 @@ test('projection helpers round-trip and importer output is deterministic', () =>
       { type: 'node', id: 2, lat: 49.19465, lon: 16.60855 },
       { type: 'node', id: 3, lat: 49.19483, lon: 16.60855 },
       { type: 'node', id: 4, lat: 49.19483, lon: 16.60830 },
-      { type: 'way', id: 10, nodes: [1, 2, 3, 4, 1], tags: { building: 'yes' } },
+      { type: 'way', id: 10, nodes: [1, 2, 3, 4, 1], tags: {
+        building: 'residential', 'building:levels': '4', 'roof:shape': 'gabled',
+        'roof:height': '3.2', 'building:material': 'plaster', name: 'Fixture House',
+      } },
       { type: 'node', id: 5, lat: 49.19469, lon: 16.60836 },
       { type: 'node', id: 6, lat: 49.19469, lon: 16.60849 },
       { type: 'node', id: 7, lat: 49.19479, lon: 16.60849 },
       { type: 'node', id: 8, lat: 49.19479, lon: 16.60836 },
-      { type: 'way', id: 11, nodes: [5, 6, 7, 8, 5], tags: { 'building:part': 'yes', height: '9.4' } },
+      { type: 'way', id: 11, nodes: [5, 6, 7, 8, 5], tags: {
+        'building:part': 'yes', height: '9.4', 'roof:shape': 'nonsense', 'roof:height': '999',
+      } },
     ],
   };
   const a = normalizeOsm(fixture, '2026-07-30T07:34:01Z');
   const b = normalizeOsm(fixture, '2026-07-30T07:34:01Z');
   assert.deepEqual(a, b);
-  assert.equal(a.buildings.length, 1);
-  assert.equal(a.buildings[0].part, true);
-  assert.equal(a.buildings[0].height, 9.4);
+  assert.equal(a.schema, 2);
+  assert.equal(a.buildings.length, 2);
+  const parent = a.buildings.find((building) => building.id === 'way/10');
+  const part = a.buildings.find((building) => building.id === 'way/11');
+  assert.equal(parent.remainder, true);
+  assert.equal(parent.levels, 4);
+  assert.equal(parent.use, 'residential');
+  assert.equal(parent.roof.shape, 'gabled');
+  assert.equal(parent.roof.height, 3.2);
+  assert.equal(parent.name, 'Fixture House');
+  assert.equal(part.part, true);
+  assert.equal(part.parentId, 'way/10');
+  assert.equal(part.height, 9.4);
+  assert.equal(part.roof.shape, null);
+  assert.equal(part.roof.height, null);
+  const resolvedAgain = resolveBuildingParts([parent, part]);
+  assert.ok(resolvedAgain.some((building) => building.id === 'way/10'));
 });

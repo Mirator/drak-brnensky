@@ -306,7 +306,7 @@ export function paintFacadeBay(style, { seed = 7, kind = 'plain', signText = nul
  * consistent colour spaces / anisotropy / wrapping. Shared by
  * makeFacadeMaterials() (existing per-style whole-building tile) and
  * materials.js's `facade` registry entry (per-style, per-bay-kind). */
-export function facadeBayMaterial({ map, emissive, normal, orm }) {
+export function facadeBayMaterial({ map, emissive, normal, orm }, { lit = false } = {}) {
   const m = new THREE.CanvasTexture(map);
   m.wrapS = m.wrapT = THREE.RepeatWrapping;
   m.anisotropy = 8;
@@ -327,7 +327,7 @@ export function facadeBayMaterial({ map, emissive, normal, orm }) {
     map: m,
     emissiveMap: em,
     emissive: new THREE.Color(0xffb45a),
-    emissiveIntensity: 0.85,
+    emissiveIntensity: lit ? 0.42 : 0.035,
     normalMap: nm,
     normalScale: new THREE.Vector2(1, 1),
     roughnessMap: ormT,
