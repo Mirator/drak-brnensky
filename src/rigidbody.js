@@ -673,6 +673,7 @@ export class PhysicsWorld {
     // otherwise clobber the candidate list the contact loop is walking.
     this._unstickOut = [];
     this._pts = new Float64Array(9 * 4); // x,y,z,radius per sample point
+    this._groundNormal = new THREE.Vector3(); // scratch for terrain.normalAt
     this._ptCount = 0;
     this._hit = {
       hit: false, t: Infinity, px: 0, py: 0, pz: 0,
@@ -859,18 +860,31 @@ export class PhysicsWorld {
     const p = this._pts;
     const a = b._aabb;
 
-    /* the implicit street plane at y = 0 */
+    /* The street: the loaded heightfield where there is one, otherwise the
+     * implicit plane at y = 0. `CollisionWorld.groundHeight` has always
+     * honoured the terrain, so without this every ragdoll, chunk of debris and
+     * shattered prop settled at y = 0 — buried up to half a metre in the
+     * cobbles beside Náměstí Svobody, and floating further out. */
+    const terrain = this.collision.terrain;
     for (let i = 0; i < n; i++) {
       const i4 = i * 4;
-      const py = p[i4 + 1];
+      const px = p[i4], py = p[i4 + 1], pz = p[i4 + 2];
       const r = p[i4 + 3];
-      const depth = r - py;
+      const gy = terrain ? terrain.heightAt(px, pz) : 0;
+      const depth = r - (py - gy);
       if (depth <= 0) continue;
-      this._pushContact(b, null, p[i4], 0, p[i4 + 2], 0, 1, 0, depth,
+      let nx = 0, ny = 1, nz = 0;
+      if (terrain) {
+        const nrm = terrain.normalAt(px, pz, this._groundNormal);
+        nx = nrm.x; ny = nrm.y; nz = nrm.z;
+      }
+      this._pushContact(b, null, px, gy, pz, nx, ny, nz, depth,
         this.collision.groundSurface, null, h);
     }
 
-    if (a[4] < -0.001) return; // fully below the street; ground handled it
+    // fully below the street; ground handled it. Only a safe early-out when the
+    // street is the flat implicit plane — on terrain the boxes stand on it.
+    if (!terrain && a[4] < -0.001) return;
     const boxes = this.collision.query(a[0], a[2], a[3], a[5], this._queryOut);
     for (let k = 0; k < boxes.length; k++) {
       const box = boxes[k];

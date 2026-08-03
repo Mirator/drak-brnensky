@@ -1407,7 +1407,7 @@ const renderGameToText = () => {
       health: Math.round(player.health),
     } : null,
     currentPlace,
-    enemies: enemies?.list?.filter((enemy) => enemy.alive).map((enemy) => ({
+    enemies: enemies?.list?.filter((enemy) => enemy.hp > 0).map((enemy) => ({
       type: enemy.type?.name || enemy.type?.id || 'enemy',
       x: +enemy.pos.x.toFixed(1), y: +enemy.pos.y.toFixed(1), z: +enemy.pos.z.toFixed(1),
     })) || [],
