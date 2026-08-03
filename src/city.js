@@ -478,6 +478,7 @@ function buildGeospatialCity(scene, collision, { map, terrain, visualOverrides =
     courtyards: buildingInfo.courtyards,
     pitchedRoofs: buildingInfo.pitchedRoofs,
     detailedBuildings: buildingInfo.detailed,
+    namedFrontages: buildingInfo.frontages,
     terrainChunks: terrainInfo.meshes.length,
     mapMeshes: planChunkMeshes,
     chunkMeshes,

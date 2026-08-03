@@ -425,10 +425,19 @@ function siteExclusions(overrides) {
   return ids;
 }
 
-function facadeRecipes(overrides) {
+/**
+ * Building id -> { recipe, boundary }, where `boundary` is the outer ring of
+ * the square the recipe's frontage faces. The site already names that square in
+ * `areaId`, which is what makes the frontage resolvable from data at all.
+ */
+function facadeRecipes(overrides, map) {
   const out = new Map();
   for (const site of Object.values(overrides?.sites || {})) {
-    for (const [id, recipe] of Object.entries(site.facadeRecipes || {})) out.set(id, recipe);
+    const entries = Object.entries(site.facadeRecipes || {});
+    if (!entries.length) continue;
+    const area = map.areas.find((candidate) => candidate.id === site.areaId);
+    const boundary = area ? decodedPolygons(area)[0]?.[0] || null : null;
+    for (const [id, recipe] of entries) out.set(id, { recipe, boundary });
   }
   return out;
 }
@@ -454,6 +463,93 @@ function heroCorridor(map, overrides) {
     }
     return false;
   };
+}
+
+function distanceToRing(x, z, ring) {
+  let best = Infinity;
+  for (let i = 1; i < ring.length; i++) {
+    const a = { x: ring[i - 1][0], z: ring[i - 1][1] };
+    const b = { x: ring[i][0], z: ring[i][1] };
+    best = Math.min(best, distanceToSegment(x, z, a, b));
+  }
+  return best;
+}
+
+/**
+ * The stretch of a footprint that stands on a square's edge.
+ *
+ * A named house does not present one tidy wall to the square: OSM splits its
+ * frontage at every node it shares with a neighbour, so Dům u čtyř mamlasů
+ * arrives as eleven segments between 0.2 m and 4.5 m along a single 27 m
+ * elevation. Picking the longest, or the nearest, single edge finds a 4 m
+ * fragment or a side wall — which is how an earlier attempt at this hung the
+ * atlantes on the back of the block. So walk the ring, keep the consecutive
+ * runs that lie on the boundary, and return the longest as one line.
+ */
+export function frontageRun(ring, boundary, tolerance = 1.5) {
+  const walls = [];
+  let dominant = null;
+  for (let i = 1; i < ring.length; i++) {
+    const [ax, az] = ring[i - 1]; const [bx, bz] = ring[i];
+    const length = Math.hypot(bx - ax, bz - az);
+    if (length < 0.05) continue;
+    if (distanceToRing((ax + bx) / 2, (az + bz) / 2, boundary) > tolerance) continue;
+    const wall = { ax, az, bx, bz, length, ux: (bx - ax) / length, uz: (bz - az) / length };
+    walls.push(wall);
+    if (!dominant || length > dominant.length) dominant = wall;
+  }
+  if (!dominant) return null;
+
+  // A corner house stands on the square on two sides. Keep the elevation that
+  // runs with the longest boundary wall and drop anything turning away from
+  // it, so the two do not average into a diagonal.
+  const ux = dominant.ux; const uz = dominant.uz;
+  const aligned = walls.filter((w) => Math.abs(w.ux * ux + w.uz * uz) > 0.9);
+  let min = Infinity; let max = -Infinity;
+  let sideSum = 0;
+  for (const w of aligned) {
+    for (const [x, z] of [[w.ax, w.az], [w.bx, w.bz]]) {
+      const t = x * ux + z * uz;
+      min = Math.min(min, t); max = Math.max(max, t);
+      sideSum += x * -uz + z * ux;
+    }
+  }
+  const length = max - min;
+  if (length < 6) return null;
+
+  const centre = (min + max) / 2;
+  const side = sideSum / (aligned.length * 2);
+  const run = {
+    length,
+    mx: centre * ux + side * -uz,
+    mz: centre * uz + side * ux,
+    ux,
+    uz,
+    nx: -uz,
+    nz: ux,
+    walls: aligned.length,
+  };
+  /* Point the normal at the square. Testing "is the probe outside the
+   * footprint" is not enough on a block relation, where a wing can swallow the
+   * probe; testing "does the probe land on the square" is the property we
+   * actually want from a frontage. */
+  const onSquare = (sign) => ringContains(
+    boundary, run.mx + run.nx * sign * 3, run.mz + run.nz * sign * 3,
+  );
+  if (!onSquare(1)) {
+    if (onSquare(-1)) {
+      run.nx = -run.nx; run.nz = -run.nz;
+    } else {
+      // Neither probe reaches the square: fall back to facing away from the
+      // footprint's own centre of mass.
+      let sx = 0; let sz = 0;
+      for (let i = 1; i < ring.length; i++) { sx += ring[i - 1][0]; sz += ring[i - 1][1]; }
+      const count = ring.length - 1;
+      const outX = run.mx - sx / count; const outZ = run.mz - sz / count;
+      if (outX * run.nx + outZ * run.nz < 0) { run.nx = -run.nx; run.nz = -run.nz; }
+    }
+  }
+  return run;
 }
 
 function facadeStyle(building, recipe) {
@@ -562,6 +658,181 @@ function addHipRoof(batch, bounds, y, height, mansard = false) {
   addHipRoof(batch, upper, breakY, height * 0.32, false);
 }
 
+/**
+ * Inset a ring by `d`, mitring at the corners.
+ *
+ * Each edge is offset along its inward normal and adjacent offset lines are
+ * intersected, so a rectangle collapses to its ridge line at d = depth/2 and
+ * anything else keeps its own plan. Returns null when the ring is degenerate.
+ */
+export function insetRing(ring, d) {
+  const n = ring.length - 1;
+  if (n < 3) return null;
+  const edges = [];
+  for (let i = 0; i < n; i++) {
+    const [ax, az] = ring[i]; const [bx, bz] = ring[i + 1];
+    const length = Math.hypot(bx - ax, bz - az);
+    if (length < 1e-6) return null;
+    edges.push({ ax, az, ux: (bx - ax) / length, uz: (bz - az) / length });
+  }
+  // Signed area picks which side is inside, so this works for either winding.
+  let twiceArea = 0;
+  for (let i = 0; i < n; i++) {
+    twiceArea += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  const sign = twiceArea > 0 ? 1 : -1;
+  for (const edge of edges) {
+    edge.nx = -edge.uz * sign;
+    edge.nz = edge.ux * sign;
+    // Offset line: dot(p, n) = c
+    edge.c = (edge.ax + edge.nx * d) * edge.nx + (edge.az + edge.nz * d) * edge.nz;
+  }
+
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const a = edges[(i - 1 + n) % n]; const b = edges[i];
+    const det = a.nx * b.nz - a.nz * b.nx;
+    if (Math.abs(det) < 1e-6) {
+      // Collinear neighbours: the offset vertex is just the shifted vertex.
+      out.push([ring[i][0] + b.nx * d, ring[i][1] + b.nz * d]);
+      continue;
+    }
+    out.push([
+      (a.c * b.nz - b.c * a.nz) / det,
+      (a.nx * b.c - b.nx * a.c) / det,
+    ]);
+  }
+  out.push([...out[0]]);
+  return out;
+}
+
+/**
+ * A roof that follows the footprint instead of its bounding box.
+ *
+ * Every pitched form here is fitted to an oriented bounding box, which works
+ * for the third of the stock that is genuinely rectangular and capped the rest
+ * flat — so central Brno read as a plateau from above, on a city whose
+ * roofscape is one of the things you would recognise it by. This offsets the
+ * outline inward by the eaves-to-ridge run and lifts the inset ring, which
+ * gives a hipped roof over any plan the offset survives.
+ *
+ * Returns false when the inset collapses or turns itself inside out — a narrow
+ * wing, a spur, a ring that folds over — and the caller falls back to flat.
+ * That check is the whole reason this is safe to run over 1500 footprints.
+ */
+function segmentsCross(p1, p2, p3, p4) {
+  const d = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const d1 = d(p3, p4, p1); const d2 = d(p3, p4, p2);
+  const d3 = d(p1, p2, p3); const d4 = d(p1, p2, p4);
+  return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+}
+
+/**
+ * Does a closed ring cross itself?
+ *
+ * The containment test alone is not enough for a mitred offset: a plan with
+ * near-collinear vertices can throw its offset corners far enough to swap
+ * order while every one of them is still inside the footprint, and the roof
+ * comes out as overlapping shards with holes between them.
+ */
+export function ringSelfIntersects(ring) {
+  const n = ring.length - 1;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue; // adjacent across the seam
+      if (segmentsCross(ring[i], ring[i + 1], ring[j], ring[j + 1])) return true;
+    }
+  }
+  return false;
+}
+
+function ringMetrics(ring) {
+  let perimeter = 0;
+  let twiceArea = 0;
+  for (let i = 1; i < ring.length; i++) {
+    perimeter += Math.hypot(ring[i][0] - ring[i - 1][0], ring[i][1] - ring[i - 1][1]);
+    twiceArea += ring[i - 1][0] * ring[i][1] - ring[i][0] * ring[i - 1][1];
+  }
+  return { perimeter, area: twiceArea / 2 };
+}
+
+/**
+ * The rise a plan can actually carry.
+ *
+ * 2A/P is the mean width of a footprint, and a hip cannot climb past half of
+ * that before the two opposing slopes meet and the offset folds through itself.
+ * Every one of the 944 plans that failed the first cut of this failed for that
+ * reason — a 6 m rise asked of a 6.8 m wide wing. So the tagged or default
+ * height is a ceiling, and a narrow wing simply gets a shallower roof, which is
+ * what a narrow wing has.
+ */
+export function footprintRoofRise(poly, maxRise, pitch = 0.9) {
+  const { perimeter, area } = ringMetrics(simplifyRing(poly[0]));
+  if (perimeter < 1e-6) return 0;
+  const meanWidth = (2 * Math.abs(area)) / perimeter;
+  return Math.min(maxRise, meanWidth * 0.45 * pitch);
+}
+
+/**
+ * A roof that follows the footprint instead of its bounding box.
+ *
+ * Every pitched form here is fitted to an oriented bounding box, which works
+ * for the third of the stock that is genuinely rectangular and capped the rest
+ * flat — so central Brno read as a plateau from above, on a city whose
+ * roofscape is one of the things you would recognise it by. This offsets the
+ * outline inward by the eaves-to-ridge run and lifts the inset ring, which
+ * gives a hipped roof over any plan the offset survives.
+ *
+ * Returns false when the offset still turns itself inside out after backing
+ * off — a spur, a slot, a ring that folds — and the caller caps it flat. That
+ * check is the whole reason this is safe to run over 1200 footprints.
+ */
+export function addFootprintRoof(batch, poly, top, rise, pitch = 0.9) {
+  // Offset the simplified outline: the nodes an OSM footprint carries along a
+  // straight wall throw wild mitres, and dropping them also cuts the roof's
+  // triangle count.
+  const ring = simplifyRing(poly[0]);
+  const outer = ringMetrics(ring).area;
+  for (const relax of [1, 0.6, 0.35]) {
+    const height = rise * relax;
+    const d = height / pitch;
+    if (d < 0.4) break;
+    const inset = insetRing(ring, d);
+    if (!inset) break;
+    const innerArea = ringMetrics(inset).area;
+    // A fold-over flips the winding; an over-inset ring balloons or vanishes.
+    if (Math.sign(innerArea) !== Math.sign(outer)) continue;
+    const ratio = Math.abs(innerArea) / Math.abs(outer);
+    if (ratio > 0.92) continue;
+    // Every inset vertex has to still be inside the footprint, which is what
+    // catches a concave plan whose offset lines cross outside it.
+    let contained = true;
+    for (let i = 0; i < inset.length - 1 && contained; i++) {
+      contained = ringContains(ring, inset[i][0], inset[i][1]);
+    }
+    if (!contained) continue;
+    if (ringSelfIntersects(inset)) continue;
+
+    const ridge = top + height;
+    const slope = Math.hypot(height, d) / 4;
+    for (let i = 1; i < ring.length; i++) {
+      const [ax, az] = ring[i - 1]; const [bx, bz] = ring[i];
+      const run = Math.hypot(bx - ax, bz - az);
+      if (run < 1e-6) continue;
+      const c = inset[i % (inset.length - 1)];
+      const e = inset[i - 1];
+      batch.quad4(
+        [ax, top, az], [bx, top, bz], [c[0], ridge, c[1]], [e[0], ridge, e[1]],
+        [0, 0], [run / 4, 0], [run / 4, slope], [0, slope],
+      );
+    }
+    // Cap whatever plateau is left, unless the inset has closed to a ridge.
+    if (ratio > 0.02) addFlatRoof(batch, [inset], ridge);
+    return true;
+  }
+  return false;
+}
+
 function addFlatRoof(batch, poly, top) {
   const contour = poly[0].map(([x, z]) => new THREE.Vector2(x, z));
   const holes = poly.slice(1).map((ring) => ring.map(([x, z]) => new THREE.Vector2(x, z)));
@@ -662,13 +933,116 @@ export function addFootprintWalls(batchFor, poly, bands, terrain, opts = {}) {
   }
 }
 
+/**
+ * Put the three named frontages on Náměstí Svobody back.
+ *
+ * These were authored in src/landmarks/svoboda.js as free-standing blocks on
+ * guessed rectangles until the square was rebuilt from OSM, at which point they
+ * were dropped — leaving the buildings the square is known for distinguishable
+ * only by plaster colour, on the one square the game fights a boss in. Each
+ * house keeps the feature it is actually named for, set out along its own
+ * frontage run: the four atlantes and the balcony they carry, the pair of
+ * cylindrical corner oriels, and Omega's grid of green glass. Simplified — the
+ * atlantes are massed, not sculpted — but the silhouettes read from the square.
+ */
+function addFrontageRecipe(chunks, recipe, run, foundation, top) {
+  const at = (along, out, y) => [
+    run.mx + run.ux * along + run.nx * out,
+    y,
+    run.mz + run.uz * along + run.nz * out,
+  ];
+  const rot = Math.atan2(-run.uz, run.ux);
+  const height = top - foundation;
+  const batchOf = (material, tier) => chunks.get(material, run.mx, run.mz, tier);
+
+  if (recipe === 'mamlasu') {
+    const stone = getMaterial('stone', { base: '#d3c9b6', mortar: '#a89d8a', scale: 1 });
+    const batch = batchOf(stone, TIER.DETAIL);
+    const balcony = foundation + Math.min(9.9, height * 0.52);
+    const span = Math.min(run.length - 4, 26);
+    // Four monumental atlantes, evenly spaced, each taking the balcony.
+    for (const k of [-1.5, -0.5, 0.5, 1.5]) {
+      const along = k * (span / 4);
+      batch.box(...at(along, 0.9, balcony - 4.5), 1.8, 0.55, 1.6, rot);
+      const [tx, ty, tz] = at(along, 0.85, balcony - 3.1);
+      batch.add(new THREE.CylinderGeometry(0.33, 0.5, 2.5, 6).translate(tx, ty, tz));
+      const [hx, hy, hz] = at(along, 0.85, balcony - 1.7);
+      batch.add(new THREE.SphereGeometry(0.3, 8, 6).translate(hx, hy, hz));
+      batch.box(...at(along, 0.85, balcony - 1.15), 1.6, 0.36, 0.55, rot);
+    }
+    batch.box(...at(0, 1.05, balcony), span + 2.4, 0.52, 2.1, rot);
+    for (let i = -span / 2; i <= span / 2; i += 0.95) {
+      batch.box(...at(i, 1.05, balcony + 0.9), 0.16, 1.15, 0.16, rot);
+    }
+    batch.box(...at(0, 1.05, balcony + 1.55), span + 1.8, 0.2, 0.4, rot);
+    return true;
+  }
+
+  if (recipe === 'lipy') {
+    // Two cylindrical corner oriels on corbels, each capped with a cone.
+    const stone = getMaterial('stone', { base: '#cfc7b4', mortar: '#a09683', scale: 1 });
+    const batch = batchOf(stone, TIER.SILHOUETTE);
+    const sill = foundation + Math.min(4.6, height * 0.28);
+    const eaves = Math.min(top - 0.5, sill + height * 0.5);
+    const radius = 1.25;
+    // Corbelled out only far enough to read as an oriel: set the drum back into
+    // the plaster, or it floats off the wall with a visible gap behind it.
+    const out = radius * 0.7;
+    for (const side of [-1, 1]) {
+      const along = side * Math.max(3.2, run.length / 2 - 3.6);
+      // the corbel it sits on: a squat inverted cone, not a spike
+      const [bx, by, bz] = at(along, out, sill - 0.6);
+      batch.add(new THREE.CylinderGeometry(radius, radius * 0.35, 1.2, 14)
+        .translate(bx, by, bz));
+      const [cx, cy, cz] = at(along, out, (sill + eaves) / 2);
+      batch.add(new THREE.CylinderGeometry(radius, radius, eaves - sill, 14)
+        .translate(cx, cy, cz));
+      // a low conical cap, and the cornice ring under it
+      const [rx, ry, rz] = at(along, out, eaves + 0.16);
+      batch.add(new THREE.CylinderGeometry(radius * 1.2, radius * 1.05, 0.34, 14)
+        .translate(rx, ry, rz));
+      const [kx, ky, kz] = at(along, out, eaves + 1.05);
+      batch.add(new THREE.ConeGeometry(radius * 1.2, 1.5, 14).translate(kx, ky, kz));
+    }
+    return true;
+  }
+
+  if (recipe === 'omega') {
+    /* The 2006 intrusion the dossier is explicit about keeping. Green glass in
+     * a continuous curtain, not panels floating off the plaster: the mullion
+     * grid is stone and the glass sits in it. */
+    // One pane per box: the material's own pane grid on top of the mullion grid
+    // read as a chequerboard.
+    const glass = getMaterial('paneGlass', { tint: '#79c9a0', panesX: 1, panesY: 1 });
+    const mullion = getMaterial('paintedMetal', { seed: 4114, color: '#6f7a72' });
+    const glassBatch = batchOf(glass, TIER.NOSHADOW);
+    const frameBatch = batchOf(mullion, TIER.DETAIL);
+    const columns = Math.max(4, Math.round(run.length / 2.9));
+    const rows = Math.max(4, Math.round((height - 2.4) / 3.1));
+    const bay = run.length / columns;
+    const storey = (height - 2.4) / rows;
+    for (let c = 0; c < columns; c++) {
+      const along = (c - (columns - 1) / 2) * bay;
+      frameBatch.box(...at(along - bay / 2, 0.3, foundation + 2.4 + (height - 2.4) / 2),
+        0.22, height - 2.4, 0.42, rot);
+      for (let r = 0; r < rows; r++) {
+        const y = foundation + 2.4 + (r + 0.5) * storey;
+        glassBatch.box(...at(along, 0.26, y), bay * 0.94, storey * 0.9, 0.14, rot);
+        frameBatch.box(...at(along, 0.3, y - storey / 2), bay, 0.16, 0.4, rot);
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 export function buildImportedBuildings(group, collision, map, terrain, chunks, visualOverrides = null) {
   const wallSets = new Map();
   const roofSets = new Map();
   const centralCell = chunks.cellOf(0, 0);
   const centralShadowMass = new Batch();
   const excluded = siteExclusions(visualOverrides);
-  const recipes = facadeRecipes(visualOverrides);
+  const recipes = facadeRecipes(visualOverrides, map);
   const onHeroRoute = heroCorridor(map, visualOverrides);
   const detailMat = getMaterial('concrete', { color: '#c8bfae' });
   const entryFor = (sets, material, x, z) => {
@@ -680,10 +1054,11 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
     return batch;
   };
 
-  let count = 0; let courtyards = 0; let pitchedRoofs = 0; let detailed = 0;
+  let count = 0; let courtyards = 0; let pitchedRoofs = 0; let detailed = 0; let frontages = 0;
   for (const building of map.buildings) {
     if (excluded.has(building.id)) continue;
-    const recipe = recipes.get(building.id) || null;
+    const recipeEntry = recipes.get(building.id) || null;
+    const recipe = recipeEntry?.recipe || null;
     const style = facadeStyle(building, recipe);
     const litBuilding = hashId(building.id) % 5 === 0;
     for (const poly of decodedPolygons(building)) {
@@ -702,11 +1077,17 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
       const oriented = orientedBounds(outline);
       const rectangular = oriented && poly.length === 1 && outline.length <= 6
         && ringArea(outline) / Math.max(1, oriented.width * oriented.depth) > 0.9;
-      // Every pitched form is fitted to the oriented bounding box, so a
-      // free-form footprint can only be capped flat.
-      if (!rectangular) roofShape = 'flat';
+      /* The box-fitted forms need a rectangle. Everything else that should be
+       * pitched gets a roof offset from its own outline instead of being capped
+       * flat — see addFootprintRoof, which falls back to flat by itself if the
+       * offset will not survive the plan. */
+      if (!rectangular && roofShape !== 'flat') roofShape = 'footprint';
       const defaultRoof = Math.max(2.2, Math.min(7.5, Math.min(oriented?.depth || 8, 16) * 0.42));
-      const roofHeight = roofShape === 'flat' ? 0 : (building.roof?.height || defaultRoof);
+      const wantRoof = building.roof?.height || defaultRoof;
+      const roofHeight = roofShape === 'flat' ? 0
+        // A footprint roof takes what its own plan can carry, and the wall
+        // height has to agree with it or the building ends up short.
+        : (roofShape === 'footprint' ? footprintRoofRise(poly, wantRoof) : wantRoof);
       const totalHeight = Math.max(2.5, building.height - (building.minHeight || 0));
       const wallHeight = Math.max(2.5, totalHeight - roofHeight);
       const foundation = terrain.heightAt(cx, cz) + (building.minHeight || 0);
@@ -763,6 +1144,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
 
       const roofMat = roofMaterial(building);
       const roofBatch = entryFor(roofSets, roofMat, cx, cz);
+      let pitchedHere = roofShape !== 'flat';
       const emitRoof = (target) => {
         if (roofShape === 'gabled') {
           target.gable(oriented.cx, top, oriented.cz, oriented.width, oriented.depth,
@@ -774,15 +1156,25 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
           const d = pointOnBox(oriented, -hw, hd, top + roofHeight);
           target.quad4(a, b, c, d, [0, 0], [oriented.width / 4, 0],
             [oriented.width / 4, oriented.depth / 4], [0, oriented.depth / 4]);
+        } else if (roofShape === 'footprint') {
+          if (!addFootprintRoof(target, poly, top, roofHeight)) {
+            addFlatRoof(target, poly, top);
+            pitchedHere = false;
+          }
         } else if (roofShape !== 'flat') {
           addHipRoof(target, oriented, top, roofHeight, roofShape === 'mansard');
         } else {
           addFlatRoof(target, poly, top);
         }
       };
+      if (recipeEntry?.boundary) {
+        const run = frontageRun(poly[0], recipeEntry.boundary);
+        if (run && addFrontageRecipe(chunks, recipe, run, foundation, top)) frontages++;
+      }
+
       emitRoof(roofBatch);
       if (central) emitRoof(centralShadowMass);
-      if (roofShape !== 'flat') pitchedRoofs++;
+      if (pitchedHere) pitchedRoofs++;
       if (detailedHere) detailed++;
       count++;
     }
@@ -819,7 +1211,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
     group.add(mesh);
     meshes++;
   }
-  return { count, courtyards, meshes, pitchedRoofs, detailed };
+  return { count, courtyards, meshes, pitchedRoofs, detailed, frontages };
 }
 
 export function buildImportedMinimap(map) {

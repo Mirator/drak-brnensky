@@ -11,8 +11,9 @@ import {
   decodeTerrain, Heightfield, geoToWorld, validateBrnoArtifacts, worldToGeo,
 } from '../src/city/data.js';
 import {
-  addDrapedPolygon, addFootprintWalls, addRoad, drapeChildren, facadeMetrics, installImportedLayout,
-  NavigationField, orientedBounds, polygonContains, simplifyRing, stitchLines,
+  addDrapedPolygon, addFootprintRoof, addFootprintWalls, addRoad, drapeChildren, facadeMetrics,
+  footprintRoofRise, frontageRun, insetRing, installImportedLayout, NavigationField,
+  orientedBounds, polygonContains, ringSelfIntersects, simplifyRing, stitchLines,
 } from '../src/city/imported.js';
 import { Batch } from '../src/city/mesh.js';
 import {
@@ -313,6 +314,71 @@ test('facade rhythm is measured per building, not shared by the whole city', () 
 
   // A degenerate levels tag must not produce a nonsense storey height.
   assert.ok(facadeMetrics({ id: 'way/2', levels: 40 }, 6).floor >= 2.7);
+});
+
+test('ring inset mitres corners and collapses a rectangle to its ridge', () => {
+  const square = [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]];
+  const inset = insetRing(square, 4);
+  assert.equal(inset.length, 5);
+  for (const [x, z] of inset.slice(0, 4)) {
+    assert.ok((Math.abs(x - 4) < 1e-6 || Math.abs(x - 16) < 1e-6)
+      && (Math.abs(z - 4) < 1e-6 || Math.abs(z - 16) < 1e-6), `mitred corner ${x},${z}`);
+  }
+  // A 30 x 10 block inset by half its depth leaves a ridge line, not an area.
+  const ridge = insetRing([[0, 0], [30, 0], [30, 10], [0, 10], [0, 0]], 5);
+  for (const [, z] of ridge) assert.ok(Math.abs(z - 5) < 1e-6, 'ridge sits on the centre line');
+
+  // Winding must not matter: the same plan traced clockwise insets inward too.
+  const clockwise = insetRing([[0, 0], [0, 20], [20, 20], [20, 0], [0, 0]], 4);
+  for (const [x, z] of clockwise.slice(0, 4)) {
+    assert.ok(x >= 3.99 && x <= 16.01 && z >= 3.99 && z <= 16.01, `inward ${x},${z}`);
+  }
+});
+
+test('footprint roofs cover L-shaped plans and refuse the ones they would break', () => {
+  const height = 3;
+  const top = 10;
+  const ell = [[[0, 0], [24, 0], [24, 10], [10, 10], [10, 26], [0, 26], [0, 0]]];
+  const roof = new Batch();
+  assert.equal(addFootprintRoof(roof, ell, top, height), true,
+    'an L-shape is exactly what the bounding-box fitters could not do');
+  let lowest = Infinity; let highest = -Infinity;
+  for (let i = 1; i < roof.p.length; i += 3) {
+    lowest = Math.min(lowest, roof.p[i]); highest = Math.max(highest, roof.p[i]);
+  }
+  assert.equal(lowest, top, 'eaves sit on the wall head');
+  assert.ok(Math.abs(highest - (top + height)) < 1e-6, 'ridge sits one roof height up');
+
+  // Every ridge vertex has to stay over the footprint, or the roof overhangs
+  // into the street.
+  for (let i = 1; i < roof.p.length; i += 3) {
+    if (roof.p[i] < top + height - 1e-6) continue;
+    assert.ok(polygonContains(ell, roof.p[i - 1], roof.p[i + 1]),
+      `ridge vertex ${roof.p[i - 1]},${roof.p[i + 1]} is over the plan`);
+  }
+
+  // A 3 m wide spur cannot carry a 3 m rise. It gets a shallower roof rather
+  // than none — footprintRoofRise is what the caller uses to agree the wall
+  // height with that up front.
+  const sliver = [[[0, 0], [40, 0], [40, 3], [0, 3], [0, 0]]];
+  assert.ok(footprintRoofRise(sliver, height) < height * 0.5,
+    'a 3 m wide wing is not allowed a 3 m ridge');
+  assert.ok(footprintRoofRise(ell, height) >= height - 1e-9,
+    'a plan wide enough for the tagged rise keeps it');
+  const shallow = new Batch();
+  assert.equal(addFootprintRoof(shallow, sliver, top, footprintRoofRise(sliver, height)), true);
+  let sliverRidge = -Infinity;
+  for (let i = 1; i < shallow.p.length; i += 3) sliverRidge = Math.max(sliverRidge, shallow.p[i]);
+  assert.ok(sliverRidge < top + height, 'and its ridge stays under the tagged height');
+
+  // A plan too thin for any roof at all is refused, so the caller caps it flat.
+  assert.equal(addFootprintRoof(new Batch(), [[[0, 0], [40, 0], [40, 0.6], [0, 0.6], [0, 0]]],
+    top, 3), false);
+
+  // Containment alone does not prove an offset is usable: a ring that swaps
+  // vertex order builds overlapping shards with holes between them.
+  assert.equal(ringSelfIntersects([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]), false);
+  assert.equal(ringSelfIntersects([[0, 0], [10, 10], [10, 0], [0, 10], [0, 0]]), true);
 });
 
 test('a straight bend contributes no joint geometry, a real corner does', () => {
