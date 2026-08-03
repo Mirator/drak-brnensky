@@ -1,0 +1,13 @@
+# Keep line endings identical on every platform.
+#
+# test/brno-map.test.js hashes the committed Brno artifacts against
+# src/data/brno-checksums.json. Without this file a Windows clone with
+# core.autocrlf=true rewrites brno-map.json's single newline to CRLF on
+# checkout, its SHA-256 changes, and the checksum test fails on a tree nobody
+# has touched.
+* text=auto eol=lf
+
+# The hashed artifacts are byte-exact inputs, never line-converted.
+src/data/brno-map.json -text
+src/data/brno-terrain.bin -text binary
+*.png -text binary

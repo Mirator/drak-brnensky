@@ -238,7 +238,10 @@ export function glassMaterial() {
 /** Per-pane glass: a grid of panes each with independently jittered
  * roughness/tint, for shopfronts and large curtain-wall windows viewed up
  * close (landmarks, hero facades). */
-export function makePaneGlassMaterial({ seed = 79, size = tierSize(256), panesX = 3, panesY = 4, envMapIntensity = 1.2 } = {}) {
+/** `tint` multiplies the albedo — Palác Omega's curtain wall is green glass. */
+export function makePaneGlassMaterial({
+  seed = 79, size = tierSize(256), panesX = 3, panesY = 4, envMapIntensity = 1.2, tint = null,
+} = {}) {
   const rng = new Rng(seed);
   const draw = (ctx, rng2, mode) => {
     ctx.fillStyle = pick(mode, '#0f141a', 60);
@@ -265,7 +268,8 @@ export function makePaneGlassMaterial({ seed = 79, size = tierSize(256), panesX 
   };
   const roughSampler = () => 0.5;
   const mat = build(seed, size, draw, { roughBase: 0.14, roughVar: 0.12, metal: 0.7, normalStrength: 0.4, envMapIntensity, sampler: roughSampler });
-  mat.emissive = new THREE.Color(0x0a1420);
+  if (tint) mat.color = new THREE.Color(tint);
+  mat.emissive = new THREE.Color(tint ? 0x0d1a12 : 0x0a1420);
   mat.emissiveIntensity = 0.3;
   return mat;
 }
