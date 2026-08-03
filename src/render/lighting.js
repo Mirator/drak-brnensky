@@ -332,7 +332,20 @@ export function createLighting(scene, camera, {
     const last = csm.lights[csm.lights.length - 1];
     if (!last || csm.lights.length < 2) return;
     last.shadow.autoUpdate = false;
-    last.shadow.needsUpdate = (frame % api.shadowStagger) === 0;
+    /* `shadow.map === null` has to force the render. three allocates the
+     * shadow map *inside* the loop it skips for a light with
+     * autoUpdate = false and needsUpdate = false, so on any frame where this
+     * cascade is skipped before it has ever rendered — frame 1, and again
+     * after setShadowResolution() nulls the map — there is no depth texture
+     * for the shader to sample. three then binds its 1x1 `emptyShadowTexture`
+     * to a `sampler2DShadow`, and because the array-uniform path does not set
+     * a compareFunction on it (unlike the single-texture path), every shadowed
+     * draw in that frame is a texture-complete-but-not-comparable sample: the
+     * far band silently loses its shadows, and the browser reports it as
+     * "TEXTURE_2D at unit N is not a depth texture with TEXTURE_COMPARE_MODE"
+     * once per draw call until it caps the warning. */
+    last.shadow.needsUpdate = last.shadow.map === null
+      || (frame % api.shadowStagger) === 0;
   }
 
   function snapSingleShadow(focus) {

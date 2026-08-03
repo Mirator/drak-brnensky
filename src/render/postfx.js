@@ -138,6 +138,88 @@ const SHOT_SAMPLES = 8;
 /** Reference height the pixel-denominated effects (CoC, sharpen) are tuned at. */
 const REFERENCE_HEIGHT = 900;
 
+/* ------------------------------------------------------------------ */
+/* addon shader hygiene                                               */
+/* ------------------------------------------------------------------ */
+
+/* Two small patches to shaders we do not own. Both are about what the D3D
+ * backend (ANGLE, so every Windows browser) prints while translating GLSL to
+ * HLSL: warnings only, but they arrive by the dozen and they bury the log
+ * lines that do matter. Neither changes what the passes compute.
+ *
+ * Both are written to be inert if a three release rewrites the shader they
+ * patch: they check that the edit actually applied and say so if it did not,
+ * rather than silently shipping an unpatched or half-patched shader. */
+
+/**
+ * `UnrealBloomPass`'s separable blur samples its input with `texture2D`
+ * inside the kernel loop. That is a gradient instruction on a render target
+ * with no mips, and the D3D backend emits
+ * "X3595: gradient instruction used in a loop with varying iteration" for
+ * each one, on each of the five mip materials.
+ *
+ * Same reasoning as `fetch()` in render/shaders.js — LOD 0 is what the
+ * sampler resolves to anyway.
+ */
+function useExplicitLodInBloomBlur(pass) {
+  const materials = pass.separableBlurMaterials || [];
+  let patched = 0;
+  for (const material of materials) {
+    const before = material.fragmentShader;
+    const after = before.replace(
+      /texture2D\( colorTexture, ([^()]+) \)/g,
+      'textureLod( colorTexture, $1, 0.0 )',
+    );
+    if (after === before) continue;
+    material.fragmentShader = after;
+    material.needsUpdate = true;
+    patched++;
+  }
+  if (patched !== materials.length) {
+    console.warn(`[render] bloom blur LOD patch applied to ${patched}/${materials.length} materials — UnrealBloomPass shader changed upstream?`);
+  }
+}
+
+/**
+ * `GTAOPass`'s Poisson denoise kernel is baked into the shader as a
+ * `const vec3[]` initialiser built straight from `Math.cos`/`Math.sin`, so
+ * every sample that lands on an axis carries a 1e-16 component where a zero
+ * belongs — `vec3( -1, 1.2246467991473532e-16, 0.074 )`. The HLSL compiler
+ * unrolls the sample loop, folds those into the offset arithmetic *in double
+ * precision*, and reports every fold it cannot represent exactly:
+ * "X4122: sum of 1 and -1.49272e-017 cannot be represented accurately".
+ *
+ * This regenerates the same kernel — same formula, same `pdRings` /
+ * `pdRadiusExponent` the pass is currently configured with — with the
+ * near-zero components snapped to zero and the rest written at float32
+ * precision, which is all the shader ever gets to keep. The sample pattern
+ * is identical to within a float32 epsilon.
+ */
+function snapDenoiseKernel(pass) {
+  const material = pass.pdMaterial;
+  const samples = pass.pdSamples;
+  if (!material || !(samples > 1)) {
+    console.warn('[render] GTAO denoise kernel not patched — GTAOPass internals changed upstream?');
+    return;
+  }
+
+  const literal = (value) => {
+    const v = Math.abs(value) < 1e-9 ? 0 : Math.fround(value);
+    return Number.isInteger(v) ? v.toFixed(1) : v.toPrecision(8);
+  };
+
+  const vectors = [];
+  for (let i = 0; i < samples; i++) {
+    const angle = (2 * Math.PI * pass.pdRings * i) / samples;
+    const radius = (i / (samples - 1)) ** pass.pdRadiusExponent;
+    vectors.push(`vec3(${literal(Math.cos(angle))}, ${literal(Math.sin(angle))}, ${literal(radius)})`);
+  }
+
+  material.defines.SAMPLES = samples;
+  material.defines.SAMPLE_VECTORS = `vec3[SAMPLES](${vectors.join(',')})`;
+  material.needsUpdate = true;
+}
+
 export function createPostFX({ renderer, scene, camera, lighting, quality = DEFAULT_QUALITY }) {
   const size = renderer.getSize(new THREE.Vector2());
   const pixelRatio = renderer.getPixelRatio();
@@ -218,6 +300,8 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
     screenSpaceRadius: false,
   });
   gtaoPass.updatePdMaterial({ lumaPhi: 6, depthPhi: 2.2, normalPhi: 3.2, radius: 5, samples: 12 });
+  // must follow the last updatePdMaterial() — that call regenerates the kernel
+  snapDenoiseKernel(gtaoPass);
   gtaoPass.blendIntensity = 0.8;
   gtaoPass.output = GTAOPass.OUTPUT.Default;
 
@@ -282,6 +366,7 @@ export function createPostFX({ renderer, scene, camera, lighting, quality = DEFA
   const bloomPass = new UnrealBloomPass(
     new THREE.Vector2(bufferWidth, bufferHeight), 0.45, 0.62, 1.15,
   );
+  useExplicitLodInBloomBlur(bloomPass);
 
   const taaPass = new TemporalAccumulationPass();
   const outputPass = new OutputPass();

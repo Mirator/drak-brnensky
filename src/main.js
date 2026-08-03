@@ -420,7 +420,13 @@ function createRenderer() {
    * performance work is tuned against are the real totals. */
   instance.info.autoReset = false;
   instance.shadowMap.enabled = true;
-  instance.shadowMap.type = THREE.PCFSoftShadowMap;
+  /* PCF, not PCFSoft: r185 deprecated PCFSoftShadowMap and substitutes
+   * PCFShadowMap at the first shadow render anyway (with a console warning),
+   * because the filter it now uses *is* the soft one — a 5-tap Vogel disk
+   * rotated per pixel on top of hardware 2x2 comparison filtering, scaled by
+   * `shadow.radius`. Asking for the deprecated constant changed nothing but
+   * the warning. */
+  instance.shadowMap.type = THREE.PCFShadowMap;
   /* AgX rolls highlights off far more gracefully than ACES and holds the
    * hue of a sodium lamp instead of bleaching it, at the cost of looking
    * flatter — the grade pass puts the contrast and saturation back.
