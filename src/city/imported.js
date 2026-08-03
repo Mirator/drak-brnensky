@@ -54,6 +54,36 @@ function roadStyle(road) {
 
 const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
 
+/**
+ * Does a tram centreline run along this road?
+ *
+ * src/city/props.js already builds the whole overhead assembly — masts, cross
+ * spans and contact wire — but only for roads flagged `tram`, and the imported
+ * layout hardcoded that to false. So the committed city laid tram rails in the
+ * paving and then hung nothing above them: `masts: 0` in the build stats, on a
+ * network whose catenary is one of the most legible things about a Czech city
+ * centre at eye level.
+ */
+function carriesTram(points, trams, tolerance = 5) {
+  let on = 0;
+  for (const [x, z] of points) {
+    for (const tram of trams) {
+      const line = qLine(tram.points);
+      let near = false;
+      for (let i = 1; i < line.length && !near; i++) {
+        const [ax, az] = line[i - 1]; const [bx, bz] = line[i];
+        const dx = bx - ax; const dz = bz - az; const lengthSq = dx * dx + dz * dz;
+        const t = lengthSq ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / lengthSq)) : 0;
+        near = Math.hypot(x - ax - dx * t, z - az - dz * t) < tolerance;
+      }
+      if (near) { on++; break; }
+    }
+  }
+  // Half the road has to follow the rails; a street that merely crosses one
+  // should not grow a catenary of its own.
+  return on * 2 >= points.length;
+}
+
 /** OSM ids of the squares the visual overrides single out for hero treatment. */
 function heroAreaIds(overrides) {
   const ids = new Set();
@@ -82,17 +112,32 @@ export function installImportedLayout(map, visualOverrides = null) {
     Object.entries(map.places).map(([key, value]) => [key, { ...value }]),
   );
 
+  /* Street furniture is budgeted to 120 roads. Ranking them by width alone
+   * spent the whole budget on ten-metre outer boulevards and left the historic
+   * core — Masarykova, Zelný trh, Panská, every street the player actually
+   * walks — with no lamps, no bins and no tram catenary. The 58 roads inside
+   * the hero corridor go first; width still orders the rest. */
+  const onHeroRoute = heroCorridor(map, visualOverrides);
   const propRoads = map.roads
     .filter((road) => road.name || road.width >= 9)
-    .sort((a, b) => b.width - a.width || compareStrings(String(a.id), String(b.id)))
+    .map((road) => ({ road, pts: qLine(road.points) }))
+    // A 2.2 m footway inside the corridor is not worth a slot that would
+    // otherwise light a tram boulevard.
+    .map((entry) => ({
+      ...entry,
+      central: entry.road.width >= 5 && entry.pts.some(([x, z]) => onHeroRoute(x, z)),
+    }))
+    .sort((a, b) => Number(b.central) - Number(a.central)
+      || b.road.width - a.road.width
+      || compareStrings(String(a.road.id), String(b.road.id)))
     .slice(0, 120);
-  const roads = propRoads.map((road) => ({
+  const roads = propRoads.map(({ road, pts }) => ({
     name: road.name || road.kind,
     w: road.width,
-    tram: false,
+    tram: carriesTram(pts, map.trams),
     paving: roadStyle(road),
     shops: road.kind === 'pedestrian' ? 0.8 : 0,
-    pts: qLine(road.points),
+    pts,
   }));
 
   const plazas = [];
@@ -191,7 +236,12 @@ WATER_MATERIAL.name = 'imported-water';
 function areaMaterial(area) {
   if (area.kind === 'park') return getMaterial(area.surface === 'gravel' ? 'gravel' : 'grass');
   if (area.kind === 'water') return WATER_MATERIAL;
-  if (['paving_stones', 'concrete', 'concrete:plates'].includes(area.surface)) return getMaterial('pavementSlab');
+  // `paving_stones` means granite setts here, exactly as it does on a road —
+  // it used to select the big pre-cast slab material instead, which is why
+  // Náměstí Svobody, tagged paving_stones in OSM, paved itself as a modern
+  // concourse while Zelný trh, tagged sett, came out cobbled.
+  if (SETT_SURFACES.includes(area.surface)) return getMaterial('cobbleFan');
+  if (['concrete', 'concrete:plates', 'paved'].includes(area.surface)) return getMaterial('pavementSlab');
   return getMaterial('cobbleFan');
 }
 
@@ -414,12 +464,19 @@ function facadeStyle(building, recipe) {
   return FACADE_STYLES[hashId(building.id) % FACADE_STYLES.length];
 }
 
+/* Fired clay weathers over a range: fresh orange-red through to the sooted
+ * brown of a roof nobody has touched since the war. Four tints keep the
+ * roofscape from reading as one printed sheet while adding at most three
+ * merged meshes per chunk. */
+const ROOF_TINTS = [null, '#ffd0b4', '#e3b39c', '#c9a58f'];
+
 function roofMaterial(building) {
   const material = building.roof?.material || '';
   const colour = building.roof?.colour || '';
   if (/slate/.test(material) || /black|grey|gray/.test(colour)) return getMaterial('roofSlate');
   if (/metal|copper/.test(material) || /green/.test(colour)) return getMaterial('roofCopper');
-  return getMaterial('roof');
+  const tint = ROOF_TINTS[hashId(building.id) % ROOF_TINTS.length];
+  return getMaterial('roof', tint ? { tint } : {});
 }
 
 function ringArea(ring) {
@@ -516,16 +573,42 @@ function addFlatRoof(batch, poly, top) {
   }
 }
 
-function bandForHeight(localBottom, localTop, height, shopfront = false) {
+/**
+ * The bay grid one building is drawn on.
+ *
+ * A facade tile is one window bay wide and one storey tall, so the two
+ * divisors below are what the eye actually reads as the building's rhythm.
+ * They used to be the module-wide BAY_W / FLOOR_H constants, which meant all
+ * 1994 imported buildings shared a single window size and a single floor
+ * line — docs/brno-reference.md calls equal storey heights "the single most
+ * common tell of procedurally generated architecture". `building:levels` is
+ * tagged on two thirds of the stock, so most of this is measured rather than
+ * invented; the rest is hashed off the OSM id so it stays deterministic.
+ */
+export function facadeMetrics(building, wallHeight) {
+  const h = hashId(building.id);
+  const levels = building.levels > 0 ? building.levels : null;
+  const floor = levels
+    ? Math.max(2.7, Math.min(4.6, wallHeight / levels))
+    : 3.05 + ((h >>> 3) % 9) * 0.1;
+  const bay = 2.6 + ((h >>> 11) % 13) * 0.1;
+  return { bay, floor };
+}
+
+/** Split a wall into its parter / piano nobile / upper / attic bands. */
+function bandForHeight(localBottom, localTop, floor, shopfront = false) {
   const bands = [];
   let y = localBottom;
-  const groundTop = Math.min(localTop, localBottom + 4.2);
+  // The parter is the tall commercial storey; the piano nobile above it is
+  // the richest. Both are measured in the building's own floors now, so the
+  // band breaks land on its window rows instead of a fixed 4.2 m.
+  const groundTop = Math.min(localTop, localBottom + floor * 1.25);
   if (groundTop > y + 0.1) bands.push([shopfront ? 'shopfront' : 'plain', y, groundTop]);
   y = groundTop;
-  const pianoTop = Math.min(localTop, localBottom + 8.0);
+  const pianoTop = Math.min(localTop, y + floor * 1.1);
   if (pianoTop > y + 0.1) bands.push(['pianoNobile', y, pianoTop]);
   y = pianoTop;
-  const atticBottom = Math.max(y, localTop - Math.min(2.8, height * 0.18));
+  const atticBottom = Math.max(y, localTop - Math.min(floor * 0.85, (localTop - y) * 0.5));
   if (atticBottom > y + 0.1) bands.push(['plain', y, atticBottom]);
   if (localTop > atticBottom + 0.1) bands.push(['attic', atticBottom, localTop]);
   return bands;
@@ -537,14 +620,19 @@ function bandForHeight(localBottom, localTop, height, shopfront = false) {
  * `batchFor(band)` hands back the batch for a band's material, so the caller
  * owns the material choice and this stays testable without a canvas.
  *
- * Bands split the wall at flat break lines measured from `foundation`, which
- * is sampled once at the footprint centre. Only the bands above the ground
- * floor can honour that: the ground band follows the terrain at each corner
- * instead. Clamping it to the foundation as well left two fifths of the
- * committed stock hanging over its own downhill wall, by up to ten metres
+ * Bands split the wall at flat break lines measured from `base`, the
+ * foundation sampled once at the footprint centre. Only the bands above the
+ * ground floor can honour that: the ground band follows the terrain at each
+ * corner instead. Clamping it to the foundation as well left two fifths of
+ * the committed stock hanging over its own downhill wall, by up to ten metres
  * under the terraces on Petrov.
+ *
+ * `bay` and `floor` are the tile size the facade is drawn on, and the vertical
+ * texture coordinate is measured from `base` so the ground floor starts on a
+ * window row rather than wherever the absolute terrain height happens to fall.
  */
-export function addFootprintWalls(batchFor, poly, bands, terrain, minHeight = 0) {
+export function addFootprintWalls(batchFor, poly, bands, terrain, opts = {}) {
+  const { minHeight = 0, bay = 3.1, floor = 3.4, base = 0 } = opts;
   for (const ring of poly) {
     for (let i = 1; i < ring.length; i++) {
       const [ax, az] = ring[i - 1]; const [bx, bz] = ring[i];
@@ -557,6 +645,7 @@ export function addFootprintWalls(batchFor, poly, bands, terrain, minHeight = 0)
         const bottomA = b === 0 ? ay : Math.max(ay, bandBottom);
         const bottomB = b === 0 ? by : Math.max(by, bandBottom);
         if (bandTop <= Math.max(bottomA, bottomB) + 0.05) continue;
+        const v = (y) => (y - base) / floor;
         // polygon-clipping normalizes outer rings counter-clockwise and
         // courtyard rings clockwise. In both cases the empty side of the
         // boundary is to the right, so emit B->A to point the wall normal out
@@ -565,8 +654,8 @@ export function addFootprintWalls(batchFor, poly, bands, terrain, minHeight = 0)
         // roofs apparently floating over the square.
         batchFor(band).quad4(
           [bx, bottomB, bz], [ax, bottomA, az], [ax, bandTop, az], [bx, bandTop, bz],
-          [0, bottomB / 3.4], [len / 3.1, bottomA / 3.4],
-          [len / 3.1, bandTop / 3.4], [0, bandTop / 3.4],
+          [0, v(bottomB)], [len / bay, v(bottomA)],
+          [len / bay, v(bandTop)], [0, v(bandTop)],
         );
       }
     }
@@ -624,13 +713,15 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
       const top = foundation + wallHeight;
       const hasShopfront = Boolean(recipe || building.name)
         || /commercial|retail|office/.test(building.use || '');
+      const { bay, floor } = facadeMetrics(building, wallHeight);
       const bands = detailedHere
-        ? bandForHeight(foundation, top, wallHeight, hasShopfront)
+        ? bandForHeight(foundation, top, floor, hasShopfront)
         : [['plain', foundation, top]];
 
       addFootprintWalls(
         (band) => entryFor(wallSets, facadeMaterial(style, band, lit), cx, cz),
-        poly, bands, terrain, building.minHeight || 0,
+        poly, bands, terrain,
+        { minHeight: building.minHeight || 0, bay, floor, base: foundation },
       );
 
       for (const ring of poly) {
@@ -659,8 +750,13 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
             const rot = Math.atan2(-dz, dx);
             const details = chunks.get(detailMat, (ax + bx) / 2, (az + bz) / 2, TIER.DETAIL);
             details.box((ax + bx) / 2, top - 0.5, (az + bz) / 2, len + 0.25, 0.34, 0.42, rot);
-            if (wallHeight > 9) details.box((ax + bx) / 2, foundation + 4.05, (az + bz) / 2,
-              len + 0.12, 0.18, 0.25, rot);
+            // String course on the building's own parter/piano-nobile break,
+            // not a fixed 4.05 m that floats across the window rows.
+            const stringCourse = bands.length > 1 ? bands[1][1] : 0;
+            if (wallHeight > 9 && stringCourse) {
+              details.box((ax + bx) / 2, stringCourse - 0.15, (az + bz) / 2,
+                len + 0.12, 0.18, 0.25, rot);
+            }
           }
         }
       }

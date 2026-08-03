@@ -78,8 +78,14 @@ function paintPantiles(seed = 99) {
   return dual(seed, S, S, draw);
 }
 
-export function makeRoofMaterial() {
-  const { color, height } = paintPantiles(99);
+/**
+ * Clay pantile roof. `seed` re-rolls the tile noise and `tint` multiplies the
+ * albedo, so a caller can hand out a handful of weathering variants across the
+ * stock: a real roofscape is a range of fired-clay reds, not one colour
+ * repeated two thousand times.
+ */
+export function makeRoofMaterial({ seed = 99, tint = null } = {}) {
+  const { color, height } = paintPantiles(seed);
   const S = color.width;
   const map = new THREE.CanvasTexture(color);
   map.wrapS = map.wrapT = THREE.RepeatWrapping;
@@ -102,6 +108,7 @@ export function makeRoofMaterial() {
 
   return new THREE.MeshStandardMaterial({
     map,
+    color: tint ? new THREE.Color(tint) : 0xffffff,
     normalMap: nmap,
     normalScale: new THREE.Vector2(1, 1),
     roughnessMap: ormMap,

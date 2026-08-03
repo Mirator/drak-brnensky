@@ -63,7 +63,8 @@ const BUILDERS = {
     );
   },
 
-  roof: () => makeRoofMaterial(),
+  /** `tint` multiplies the pantile albedo; see makeRoofMaterial. */
+  roof: (opts = {}) => makeRoofMaterial(opts),
   roofSlate: (opts = {}) => makeSlateCopperMaterial(opts.seed ?? 202, { copper: false }),
   roofCopper: (opts = {}) => makeSlateCopperMaterial(opts.seed ?? 202, { copper: true }),
   roofMetalSeam: (opts = {}) => makeMetalSeamRoofMaterial(opts.seed),

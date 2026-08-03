@@ -53,6 +53,13 @@ const followAt = (name, key, offset, yaw, opts = {}) => {
   return follow(name, [p.x + offset[0], ground(key), p.z + offset[1]], yaw,
     { lookAt: [p.x, p.z], ...opts });
 };
+/** Third-person at an explicit world spot, facing an explicit one. For views
+ *  framed on a street rather than on a named place. */
+const followTo = (name, at, lookAt, opts = {}) => {
+  const terrain = g().world.terrain;
+  return follow(name, [at[0], terrain ? terrain.heightAt(at[0], at[1]) : 0, at[1]],
+    Math.atan2(lookAt[0] - at[0], lookAt[1] - at[1]), { lookAt, ...opts });
+};
 
 export const VIEWS = [
   /* --- landmarks: the things that have to read as Brno --- */
@@ -67,13 +74,18 @@ export const VIEWS = [
   // to frame this from the south now sit inside the rebuilt east frontage.
   freeBetween('svoboda-wide', 'orloj', [20, 22, 18], 'column', [0, 8, 0], 54),
   freeAt('zelny-parnas', 'zelnyTrh', [0, 8, 38], [0, 7, 0], 60),
-  freeAt('nadrazi', 'nadrazi', [0, 16, 38], [0, 12, -24], 58),
+  // From Nádražní, the frontage side. The old eye sat 38 m behind the building
+  // and photographed the blank rear elevation.
+  freeAt('nadrazi', 'nadrazi', [0, 17, -68], [0, 13, 0], 58),
   freeAt('moravske', 'moravske', [0, 13, 64], [0, 9, 2], 58),
   freeAt('janacek', 'janacek', [0, 14, 62], [0, 12, 0], 58),
   free('rooftops', [30, 110, 150], [-70, 24, 60], 44),
 
   /* --- gameplay: what the player actually stares at for an hour --- */
-  followAt('street-masarykova', 'svoboda', [0, 80], Math.PI),
+  // Halfway down Masarykova looking back up to the square. The old offset from
+  // the svoboda anchor landed in a block's courtyard, so this view — one of
+  // only seven the player's own camera ever takes — showed no street at all.
+  followTo('street-masarykova', [147.2, 251.9], [114.5, 188.3]),
   followAt('street-ceska', 'ceska', [0, 0], Math.PI * 0.5),
   followAt('svoboda-ground', 'svoboda', [0, 10], Math.PI),
   followAt('petrov-approach', 'petrov', [0, 38], Math.PI),

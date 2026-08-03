@@ -11,7 +11,7 @@ import {
   decodeTerrain, Heightfield, geoToWorld, validateBrnoArtifacts, worldToGeo,
 } from '../src/city/data.js';
 import {
-  addDrapedPolygon, addFootprintWalls, addRoad, drapeChildren, installImportedLayout,
+  addDrapedPolygon, addFootprintWalls, addRoad, drapeChildren, facadeMetrics, installImportedLayout,
   NavigationField, orientedBounds, polygonContains, simplifyRing, stitchLines,
 } from '../src/city/imported.js';
 import { Batch } from '../src/city/mesh.js';
@@ -265,7 +265,7 @@ test('imported walls reach the ground at every corner of a sloping footprint', (
   const foundation = terrain.heightAt(10);
 
   const plain = new Batch();
-  addFootprintWalls(() => plain, [ring], [['plain', foundation, foundation + 12]], terrain);
+  addFootprintWalls(() => plain, [ring], [['plain', foundation, foundation + 12]], terrain, { base: foundation });
   const lowest = (batch) => {
     let min = Infinity;
     for (let i = 1; i < batch.p.length; i += 3) min = Math.min(min, batch.p[i]);
@@ -279,7 +279,7 @@ test('imported walls reach the ground at every corner of a sloping footprint', (
   addFootprintWalls(() => banded, [ring], [
     ['shopfront', foundation, foundation + 4.2],
     ['pianoNobile', foundation + 4.2, foundation + 12],
-  ], terrain);
+  ], terrain, { base: foundation });
   assert.equal(lowest(banded), terrain.heightAt(0));
   const breaks = new Set();
   for (let i = 1; i < banded.p.length; i += 3) breaks.add(Math.round(banded.p[i] * 1000));
@@ -288,8 +288,31 @@ test('imported walls reach the ground at every corner of a sloping footprint', (
 
   // min_height lifts the whole shell without reintroducing the gap.
   const raised = new Batch();
-  addFootprintWalls(() => raised, [ring], [['plain', foundation, foundation + 12]], terrain, 3);
+  addFootprintWalls(() => raised, [ring], [['plain', foundation, foundation + 12]], terrain,
+    { minHeight: 3, base: foundation });
   assert.equal(lowest(raised), terrain.heightAt(0) + 3);
+});
+
+test('facade rhythm is measured per building, not shared by the whole city', () => {
+  // building:levels is tagged on two thirds of the stock, so most storey
+  // heights are measured; the rest are hashed off the id and stay stable.
+  const measured = facadeMetrics({ id: 'way/1', levels: 4 }, 15.2);
+  assert.ok(Math.abs(measured.floor - 3.8) < 1e-9, 'four levels over 15.2 m is a 3.8 m storey');
+  const tall = facadeMetrics({ id: 'way/1', levels: 6 }, 15.2);
+  assert.ok(tall.floor < measured.floor, 'more levels in the same height means shorter storeys');
+
+  const untagged = ['way/10', 'way/11', 'way/12', 'way/13', 'way/14', 'way/15']
+    .map((id) => facadeMetrics({ id }, 14));
+  assert.ok(new Set(untagged.map((m) => `${m.bay}|${m.floor}`)).size > 1,
+    'untagged neighbours do not all land on one bay grid');
+  for (const m of untagged) {
+    assert.ok(m.floor >= 2.7 && m.floor <= 4.6, `storey ${m.floor} stays plausible`);
+    assert.ok(m.bay >= 2.6 && m.bay <= 3.9, `bay ${m.bay} stays plausible`);
+  }
+  assert.deepEqual(facadeMetrics({ id: 'way/10' }, 14), untagged[0], 'deterministic per id');
+
+  // A degenerate levels tag must not produce a nonsense storey height.
+  assert.ok(facadeMetrics({ id: 'way/2', levels: 40 }, 6).floor >= 2.7);
 });
 
 test('a straight bend contributes no joint geometry, a real corner does', () => {
