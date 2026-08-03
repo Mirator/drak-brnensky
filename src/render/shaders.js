@@ -7,10 +7,27 @@ import * as THREE from 'three';
    Everything here is a plain `ShaderPass`-compatible shader definition
    so postfx.js can wrap them with the stock `ShaderPass`.
 
-   All of these compile as GLSL ES 1.00 (that is what three emits unless
-   a material asks for GLSL3), so: no `inverse()`, no `mat3( mat4 )`, no
-   dynamic loop bounds, and `texture2D` / `gl_FragColor` rather than the
-   ES 3.00 spellings.
+   These are written in the ES 1.00 dialect — `texture2D`, `gl_FragColor`,
+   no dynamic loop bounds — because that is the spelling three's own chunks
+   use and it keeps these passes consistent with them. The shader that
+   reaches the driver is ES 3.00 either way (r185 always emits
+   `#version 300 es` and a compatibility prologue that defines `texture2D`
+   as `texture`), so ES 3.00 built-ins are available where they earn their
+   keep: see `fetch()` below.
+
+   Sampling
+   --------
+   Every texture these passes read is a non-mipmapped render target, so all
+   of it goes through `fetch()`, which is `textureLod( ..., 0.0 )`.
+
+   That is not a micro-optimisation. A plain `texture2D` is a *gradient*
+   instruction: the driver computes derivatives to pick a mip level that
+   cannot exist here. Inside a marching loop the D3D backend cannot prove
+   the derivatives are well defined and warns for every such call
+   ("X3595: gradient instruction used in a loop with varying iteration"),
+   and on the loops here it also has to keep the derivative maths. Asking
+   for LOD 0 explicitly says what we mean, is what the sampler would have
+   clamped to anyway, and leaves the log clean.
 
    The depth-consuming passes read metres from LinearDepthPass rather than
    sampling a depth buffer directly — see render/depth.js for both reasons
@@ -21,6 +38,14 @@ import * as THREE from 'three';
 const LUMA = 'const vec3 LUMA = vec3( 0.2126, 0.7152, 0.0722 );';
 
 /**
+ * The only texture read in this file. Explicit LOD 0 — see the header.
+ */
+const FETCH = /* glsl */`
+vec4 fetch( sampler2D tex, vec2 uv ) {
+  return textureLod( tex, uv, 0.0 );
+}`;
+
+/**
  * Depth comes from LinearDepthPass (see render/depth.js): already
  * linearised to metres, and in a texture that is never a render target of
  * any other pass — sampling the scene buffer's own depth attachment would
@@ -28,7 +53,7 @@ const LUMA = 'const vec3 LUMA = vec3( 0.2126, 0.7152, 0.0722 );';
  */
 const LINEAR_DEPTH = /* glsl */`
 float linearDistance( sampler2D depthTex, vec2 uv ) {
-  return texture2D( depthTex, uv ).x;
+  return fetch( depthTex, uv ).x;
 }`;
 
 const HASH = /* glsl */`
@@ -80,12 +105,13 @@ export const GodRaysShader = {
 
     ${LUMA}
     ${HASH}
+    ${FETCH}
     ${LINEAR_DEPTH}
 
     const int SAMPLES = 16;
 
     void main() {
-      vec4 base = texture2D( tDiffuse, vUv );
+      vec4 base = fetch( tDiffuse, vUv );
 
       if ( uIntensity <= 0.0005 ) {
         gl_FragColor = base;
@@ -103,7 +129,7 @@ export const GodRaysShader = {
         vec2 c = clamp( uv, vec2( 0.0 ), vec2( 1.0 ) );
         float dist = linearDistance( tDepth, c );
         float farMask = smoothstep( 300.0, 800.0, dist );
-        float lum = dot( texture2D( tDiffuse, c ).rgb, LUMA );
+        float lum = dot( fetch( tDiffuse, c ).rgb, LUMA );
         float brightMask = smoothstep( 0.30, 1.30, lum );
         acc += farMask * brightMask * illum;
         illum *= uDecay;
@@ -159,6 +185,7 @@ export const DofShader = {
     uniform float uAmount;
     varying vec2 vUv;
 
+    ${FETCH}
     ${LINEAR_DEPTH}
 
     const int TAPS = 16;
@@ -172,7 +199,7 @@ export const DofShader = {
     }
 
     void main() {
-      vec4 base = texture2D( tDiffuse, vUv );
+      vec4 base = fetch( tDiffuse, vUv );
 
       if ( uAmount <= 0.001 ) {
         gl_FragColor = base;
@@ -200,7 +227,7 @@ export const DofShader = {
         float dTap = linearDistance( tDepth, uv );
         float w = dTap > centreDist ? 1.0 : clamp( cocAt( dTap ) * uAmount / max( c, 1e-3 ), 0.0, 1.0 );
 
-        sum += texture2D( tDiffuse, uv ).rgb * w;
+        sum += fetch( tDiffuse, uv ).rgb * w;
         wsum += w;
       }
 
@@ -272,6 +299,7 @@ export const GradeShader = {
     varying vec2 vUv;
 
     ${LUMA}
+    ${FETCH}
 
     void main() {
       vec2 dir = vUv - 0.5;
@@ -281,9 +309,9 @@ export const GradeShader = {
              corners. About 1.5 px at the corners of a 1600-wide frame. --- */
       vec2 ca = dir * r2 * uAberration * 0.004;
       vec3 col;
-      col.r = texture2D( tDiffuse, clamp( vUv - ca, vec2( 0.0 ), vec2( 1.0 ) ) ).r;
-      col.g = texture2D( tDiffuse, vUv ).g;
-      col.b = texture2D( tDiffuse, clamp( vUv + ca, vec2( 0.0 ), vec2( 1.0 ) ) ).b;
+      col.r = fetch( tDiffuse, clamp( vUv - ca, vec2( 0.0 ), vec2( 1.0 ) ) ).r;
+      col.g = fetch( tDiffuse, vUv ).g;
+      col.b = fetch( tDiffuse, clamp( vUv + ca, vec2( 0.0 ), vec2( 1.0 ) ) ).b;
       col = max( col, 0.0 );
 
       /* --- lift / gamma / gain --- */
@@ -378,13 +406,14 @@ export const SharpenShader = {
 
     ${LUMA}
     ${HASH}
+    ${FETCH}
 
     void main() {
-      vec3 c = texture2D( tDiffuse, vUv ).rgb;
-      vec3 n = texture2D( tDiffuse, vUv + vec2( 0.0, -uTexel.y ) ).rgb;
-      vec3 s = texture2D( tDiffuse, vUv + vec2( 0.0,  uTexel.y ) ).rgb;
-      vec3 w = texture2D( tDiffuse, vUv + vec2( -uTexel.x, 0.0 ) ).rgb;
-      vec3 e = texture2D( tDiffuse, vUv + vec2(  uTexel.x, 0.0 ) ).rgb;
+      vec3 c = fetch( tDiffuse, vUv ).rgb;
+      vec3 n = fetch( tDiffuse, vUv + vec2( 0.0, -uTexel.y ) ).rgb;
+      vec3 s = fetch( tDiffuse, vUv + vec2( 0.0,  uTexel.y ) ).rgb;
+      vec3 w = fetch( tDiffuse, vUv + vec2( -uTexel.x, 0.0 ) ).rgb;
+      vec3 e = fetch( tDiffuse, vUv + vec2(  uTexel.x, 0.0 ) ).rgb;
 
       vec3 mn = min( c, min( min( n, s ), min( w, e ) ) );
       vec3 mx = max( c, max( max( n, s ), max( w, e ) ) );
