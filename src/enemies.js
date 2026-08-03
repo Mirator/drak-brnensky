@@ -44,6 +44,13 @@ export const ENEMY_TYPES = {
 
 /** How long a body stays on the ground before the pool takes it back. */
 const CORPSE_LIFE = { whelp: 2.8, spitter: 3.0, golem: 3.6, boss: 6.5 };
+/** Used wherever an archetype is missing from CORPSE_LIFE, so the ragdoll's
+ * lifetime budget and the manager's cutoff can never drift apart. */
+const CORPSE_LIFE_DEFAULT = 2.8;
+/** How long the solver takes to fade a settled body out. */
+const CORPSE_FADE = 1.2;
+/** Horizontal speed a corpse is allowed to keep at the moment of death (m/s). */
+const CORPSE_MAX_SPEED = 3;
 /** Extra personal space, so a pack spreads out instead of merging. */
 const SPACING = { whelp: 1.45, spitter: 1.5, golem: 1.15, boss: 1 };
 /** Armour thresholds: each one throws a golem plate off and opens the core. */
@@ -714,14 +721,32 @@ export class EnemyManager {
       velocity: e.vel,
       blendTime: 0.1,
       settleTimeout: 3.5,
-      maxLifetime: (CORPSE_LIFE[e.typeId] ?? 3) * 2.4,
-      fadeTime: 1.2,
+      maxLifetime: (CORPSE_LIFE[e.typeId] ?? CORPSE_LIFE_DEFAULT) * 2.4,
+      fadeTime: CORPSE_FADE,
       userData: e,
     });
     if (!rag) return false;
     e.ragdoll = rag;
     e.ragdollFix = ragdollFixMap(e.model.def, e.model.tpl);
     return true;
+  }
+
+  /**
+   * Keep the root group under the simulated body. The skinned meshes carry a
+   * generous but *fixed* bounding sphere anchored to the root, so a root left
+   * at the moment of death culls a corpse that has since tumbled clear of it.
+   * `_driveRagdoll` writes bones in their parent's frame, so this only moves
+   * the culling sphere — never the pose — and it leaves `e.pos` where the
+   * procedural fallback expects it if the solver evicts this body.
+   */
+  _followRagdoll(e) {
+    const bones = e.ragdoll.bones;
+    if (!bones.length || !bones[0].out) return;
+    const p = bones[0].out.position;
+    e.pos.x = p.x;
+    e.pos.z = p.z;
+    e.pos.y = this.collision.groundHeight(p.x, p.z, p.y, e.type.radius, 1.2);
+    e.object.position.copy(e.pos);
   }
 
   /**
@@ -1302,6 +1327,22 @@ export class EnemyManager {
     e.shield = 0;
     e.run = 0;          // a corpse must not keep running on the spot
     e.stagger = 0;
+    /* The dead branch of the update loop returns before the spawn pop-in that
+     * grows a creature from 1% back to full size, so something killed inside
+     * its 0.55 s pop-in used to leave an invisible corpse — and, if it drew a
+     * ragdoll slot, a body the solver simulated that nobody could see. */
+    e.object.scale.setScalar(e.scale);
+    /* Going limp dumps the momentum into the ground. A whelp killed mid-lunge
+     * carries 16 m/s plus up to 6 m/s of knockback, and neither the ragdoll nor
+     * the procedural corpse has enough friction to eat that — the body skates
+     * across the cobbles with its legs already folded. Keep a hint of the
+     * direction it was travelling, not the whole of it. */
+    const planar = Math.hypot(e.vel.x, e.vel.z);
+    if (planar > CORPSE_MAX_SPEED) {
+      const k = CORPSE_MAX_SPEED / planar;
+      e.vel.x *= k;
+      e.vel.z *= k;
+    }
     this._enterState(e, 'dead');
     e.corpseOnGround = e.onGround && !e.flying;
     e.landedT = 0;
@@ -1335,10 +1376,19 @@ export class EnemyManager {
     /* --- solver-driven corpse --- */
     if (e.ragdoll) {
       if (e.ragdoll.alive) {
-        const life = (CORPSE_LIFE[e.typeId] ?? 2.8) * 2.4;
+        /* The solver needs its full budget plus the fade, or the body is
+         * deleted on the very frame the fade starts and pops out of view. */
+        const life = (CORPSE_LIFE[e.typeId] ?? CORPSE_LIFE_DEFAULT) * 2.4 + CORPSE_FADE;
         // the solver fades once it has settled; ride that into the ground
         const fade = e.ragdoll.fade ?? 1;
         const sink = (1 - fade) * (e.typeId === 'boss' ? 2.6 : 0.9);
+        /* Follow the body with the root group. The frustum-culling sphere
+         * lives on the root, so a corpse thrown clear of where it died — or
+         * one shot out of the sky — would otherwise blink out, body and
+         * shadow, as soon as the death point left the frustum. `_driveRagdoll`
+         * re-derives every bone from its parent's world matrix, so moving the
+         * root cannot change the rendered pose. */
+        this._followRagdoll(e);
         this._driveRagdoll(e, sink);
         e.glow = -0.75 * (1 - fade);     // the light goes out of it
         this._shade(e);
@@ -1351,12 +1401,15 @@ export class EnemyManager {
       /* The handle died — settled and faded out, or evicted by a newer
        * ragdoll. If it faded on schedule the body is gone and the slot goes
        * back to the pool; if it was cut short, fall back to the procedural
-       * corpse so nothing pops out of the world in front of the player. */
+       * corpse so nothing pops out of the world in front of the player. The
+       * solver only ever removes a ragdoll of its own accord once `fade` has
+       * reached zero, so `fade` is the cause, not a guess from the clock. */
+      const cutShort = (e.ragdoll.fade ?? 0) > 0.001;
       e.ragdoll = null;
-      const life = CORPSE_LIFE[e.typeId] ?? 2.8;
-      if (e.stateT < life * 0.6) {
+      if (cutShort) {
         e.corpseOnGround = true;
         e.landedT = Math.max(e.landedT, 0.4);
+        e.vel.set(0, 0, 0);   // the solver already spent the momentum
       } else {
         e.object.visible = false;
         this.pools[e.typeId].push(e);
@@ -1388,14 +1441,24 @@ export class EnemyManager {
       }
     } else {
       e.landedT += dt;
-      const f = Math.exp(-9 * dt);
+      /* A body on the cobbles is not a puck. Exponential decay alone never
+       * reaches zero, so the corpse creeps for the whole of its life — and it
+       * used to creep through walls too, because this branch never resolved
+       * collision. Damp hard, then stop dead below walking pace. */
+      const f = Math.exp(-14 * dt);
       e.vel.x *= f;
       e.vel.z *= f;
-      e.pos.x += e.vel.x * dt;
-      e.pos.z += e.vel.z * dt;
+      if (Math.hypot(e.vel.x, e.vel.z) < 0.25) {
+        e.vel.x = 0;
+        e.vel.z = 0;
+      } else {
+        e.pos.x += e.vel.x * dt;
+        e.pos.z += e.vel.z * dt;
+        this.collision.resolve(e.pos, e.type.radius, e.type.height, 1.15);
+      }
     }
 
-    const life = CORPSE_LIFE[e.typeId] ?? 2.8;
+    const life = CORPSE_LIFE[e.typeId] ?? CORPSE_LIFE_DEFAULT;
     const sinkT = Math.max(0, e.stateT - (life - 0.6)) / 0.6;
     e.object.position.set(e.pos.x, e.pos.y - sinkT * (e.typeId === 'boss' ? 2.2 : 0.7), e.pos.z);
     e.object.rotation.y = e.facing;
