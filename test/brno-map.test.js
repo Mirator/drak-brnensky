@@ -11,8 +11,8 @@ import {
   decodeTerrain, Heightfield, geoToWorld, validateBrnoArtifacts, worldToGeo,
 } from '../src/city/data.js';
 import {
-  addDrapedPolygon, addRoad, drapeChildren, installImportedLayout, NavigationField,
-  orientedBounds, polygonContains, stitchLines,
+  addDrapedPolygon, addFootprintWalls, addRoad, drapeChildren, installImportedLayout,
+  NavigationField, orientedBounds, polygonContains, simplifyRing, stitchLines,
 } from '../src/city/imported.js';
 import { Batch } from '../src/city/mesh.js';
 import {
@@ -231,7 +231,7 @@ test('draped polygons and roads subdivide terrain spans to four metres', () => {
     [0, 0], [16, 0], [16, 12], [0, 12], [0, 0],
   ]], terrain);
   const roadBatch = new Batch();
-  addRoad(roadBatch, [[0, 0], [12, 0], [12, 9]], 2, terrain);
+  addRoad(() => roadBatch, [[0, 0], [12, 0], [12, 9]], 2, terrain);
   const maxTriangleEdge = (positions) => {
     let max = 0;
     for (let i = 0; i < positions.length; i += 9) {
@@ -253,6 +253,67 @@ test('oriented roof bounds follow the dominant frontage edge', () => {
   assert.ok(bounds);
   assert.ok(Math.abs(bounds.width - Math.hypot(12, 12)) < 0.01);
   assert.ok(Math.abs(bounds.depth - Math.hypot(4, 4)) < 0.01);
+});
+
+test('imported walls reach the ground at every corner of a sloping footprint', () => {
+  /* 20 x 20 m footprint on a 1-in-5 slope. The foundation is sampled once at
+   * the centre (y = 2), so a ground band clamped to it hangs two metres over
+   * the downhill corner — on the committed map that left 428 of 2048
+   * footprints floating by more than a metre. */
+  const terrain = { heightAt: (x) => x * 0.2 };
+  const ring = [[0, 0], [20, 0], [20, 20], [0, 20], [0, 0]];
+  const foundation = terrain.heightAt(10);
+
+  const plain = new Batch();
+  addFootprintWalls(() => plain, [ring], [['plain', foundation, foundation + 12]], terrain);
+  const lowest = (batch) => {
+    let min = Infinity;
+    for (let i = 1; i < batch.p.length; i += 3) min = Math.min(min, batch.p[i]);
+    return min;
+  };
+  assert.equal(lowest(plain), terrain.heightAt(0));
+
+  // Banded facades keep their flat break lines, but the ground band still
+  // follows the terrain.
+  const banded = new Batch();
+  addFootprintWalls(() => banded, [ring], [
+    ['shopfront', foundation, foundation + 4.2],
+    ['pianoNobile', foundation + 4.2, foundation + 12],
+  ], terrain);
+  assert.equal(lowest(banded), terrain.heightAt(0));
+  const breaks = new Set();
+  for (let i = 1; i < banded.p.length; i += 3) breaks.add(Math.round(banded.p[i] * 1000));
+  assert.ok(breaks.has(Math.round((foundation + 4.2) * 1000)),
+    'the band break stays level all the way round');
+
+  // min_height lifts the whole shell without reintroducing the gap.
+  const raised = new Batch();
+  addFootprintWalls(() => raised, [ring], [['plain', foundation, foundation + 12]], terrain, 3);
+  assert.equal(lowest(raised), terrain.heightAt(0) + 3);
+});
+
+test('a straight bend contributes no joint geometry, a real corner does', () => {
+  const terrain = { heightAt: () => 0 };
+  const straight = new Batch();
+  addRoad(() => straight, [[0, 0], [3, 0.01], [6, 0]], 8, terrain);
+  const corner = new Batch();
+  addRoad(() => corner, [[0, 0], [3, 0], [3, 3]], 8, terrain);
+  assert.equal(straight.triangles, 4, 'two strip quads, no fan at a 0.4-degree kink');
+  assert.ok(corner.triangles > 4, 'a right-angle bend still gets its wedge filled');
+});
+
+test('a rectangle traced with redundant nodes still reads as a rectangle', () => {
+  // Same 20 x 8 m footprint, once with bare corners and once with the extra
+  // wall-sharing nodes OSM footprints routinely carry.
+  const bare = [[0, 0], [20, 0], [20, 8], [0, 8], [0, 0]];
+  const traced = [[0, 0], [7, 0], [13, 0], [20, 0], [20, 5], [20, 8],
+    [11, 8], [4, 8], [0, 8], [0, 4], [0, 0]];
+  assert.deepEqual(simplifyRing(bare), bare);
+  assert.equal(simplifyRing(traced).length, 5);
+  assert.ok(Math.abs(orientedBounds(simplifyRing(traced)).width - 20) < 0.01);
+  // A genuine corner survives: an L keeps all six of its own vertices.
+  const ell = [[0, 0], [20, 0], [20, 8], [10, 8], [10, 16], [0, 16], [0, 0]];
+  assert.equal(simplifyRing(ell).length, 7);
 });
 
 test('chooseStart validates its fallback when the square footprint is absent', () => {

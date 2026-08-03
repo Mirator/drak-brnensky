@@ -6,6 +6,7 @@
     "svoboda": {
       "areaId": "way/4934858",
       "foundation": "terrain",
+      "kerb": true,
       "excludeBuildingIds": [],
       "facadeRecipes": {
         "relation/9053253": "mamlasu",

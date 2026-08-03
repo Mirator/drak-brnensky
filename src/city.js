@@ -413,11 +413,11 @@ function buildGeospatialCity(scene, collision, { map, terrain, visualOverrides =
   const planChunks = new Chunks({ cells: 5, detailRadius: 180 });
   const buildingChunks = new Chunks({ cells: 3, detailRadius: 180 });
 
-  const importedLayout = installImportedLayout(map);
+  const importedLayout = installImportedLayout(map, visualOverrides);
   collision.setTerrain(terrain);
   const terrainInfo = buildTerrain(cityGroup, terrain);
   const cameraAt = trackCamera(terrainInfo.meshes[0]);
-  const plan = buildImportedPlan(cityGroup, map, terrain, planChunks);
+  const plan = buildImportedPlan(cityGroup, map, terrain, planChunks, visualOverrides);
   const planChunkMeshes = planChunks.finish(cityGroup);
   const flagAt = createFlagAt(plan.flags);
   const navigation = new NavigationField(flagAt, terrain);

@@ -17,19 +17,18 @@ import { BRNO_PLACES } from '../data/brno-layout.js';
  *   of the 1645 siege. The projectile silhouette is the point. It releases a
  *   glass marble at 11:00; the tip turns once a minute, the glass section once
  *   an hour. Built as the real object, not as a fantasy orloj.
- * - **Dům u čtyř mamlasů** (1899-1902, Wanderley): historicist rental palace,
- *   side risalits ending in towers, and four monumental Atlas figures carrying
- *   a full-width balcony on the main facade.
- * - **Schwanzův palác / Dům pánů z Lipé** (from 1589): Renaissance, two
- *   cylindrical corner oriels on relief parapets. The brief's "Schwansee" does
- *   not exist — see the dossier's flagged name correction.
- * - **Palác Omega** (2006): a grid of green glass squares, deliberately jarring
- *   against its historicist neighbours. Kept, because the dossier is explicit
- *   that the square already contains that dissonance.
+ * The square's three named frontages — **Dům u čtyř mamlasů** (1899-1902,
+ * Wanderley), **Schwanzův palác / Dům pánů z Lipé** (from 1589) and **Palác
+ * Omega** (2006) — used to be authored here as free-standing blocks on guessed
+ * rectangles. They are now raised from their own OSM shells, with the plaster
+ * style picked per building by `facadeRecipes` in
+ * src/data/brno-visual-overrides.json, so they stand on the real frontage line
+ * instead of doubling it. (The brief's "Schwansee" does not exist — see the
+ * dossier's flagged name correction.)
  *
- * GAMEPLAY: the boss fight happens here. Everything new is pushed out to the
- * square's edges — nothing is added inside the plaza rect except the column and
- * the orloj that were already there, and neither gained footprint.
+ * GAMEPLAY: the boss fight happens here. Nothing is added inside the plaza rect
+ * except the column and the orloj that were already there, and neither gained
+ * footprint.
  */
 
 export const SITE = { cx: BRNO_PLACES.svoboda.x, cz: BRNO_PLACES.svoboda.z };
@@ -41,17 +40,14 @@ export const ORLOJ_H = 6.0;
 export const ORLOJ_AT = [BRNO_PLACES.orloj.x, BRNO_PLACES.orloj.z];
 
 /**
- * Footprints. The column and orloj keep the reservations they already had; the
- * three named frontages are new and sit OUTSIDE the plaza rect so the fight
- * arena is untouched.
+ * Footprints. Only the column and the orloj are reserved here — the frontages
+ * are imported buildings now, and reserving their old guessed rectangles would
+ * punch holes in the paving where nothing stands.
  */
 export const RECTS = [
   [ORLOJ_AT[0], ORLOJ_AT[1], 16, 16], // orloj plinth and its apron
   [COLUMN_AT[0], COLUMN_AT[1], 14, 14], // plague column steps
-  [44, -50, 20, 30], // Dům u čtyř mamlasů, east side
-  [44, 4, 18, 24], // Palác Omega, east side
-  [-44, -30, 20, 28], // Schwanzův palác / Dům pánů z Lipé, west side
-].slice(0, 2);
+];
 
 export function build(b, ctx) {
   const { M, info } = ctx;
@@ -147,144 +143,11 @@ export function build(b, ctx) {
   // bronze plaque: 1645, and the 365 years
   b.raw(M.bronze, new THREE.BoxGeometry(1.1, 0.7, 0.08).rotateX(-0.5).translate(ox, 0.62, oz - 1.72));
 
-  /* ================= 3. Dům u čtyř mamlasů ======================== */
-  // Four atlantes carrying a full-width balcony; risalits ending in towers.
-  // Named square frontages are now generated from their exact OSM shells.
-  // Keep the old authored recipes below as reference, but never instantiate
-  // the duplicate free-standing blocks in the geospatial city.
-  if (false) {
-  {
-    const hx = 44, hz = -50, W = 30, D = 20, EAVES = 20;
-    b.tier(0);
-    b.box(M.sandstone, hx, 0, hz, D, EAVES, W);
-    b.mould(M.stonePale, hx, 0, hz, D + 0.6, W + 0.6, PROFILE.plinth);
-    b.mould(M.stonePale, hx, 4.4, hz, D + 0.4, W + 0.4, PROFILE.string);
-    b.mould(M.stonePale, hx, EAVES - 1.1, hz, D + 0.5, W + 0.5, PROFILE.cornice);
-    b.hip(M.slate, hx, EAVES, hz, D + 1, W + 1, 5.2, 0.35);
-    // side risalits, each ending in a little tower
-    for (const s of [-1, 1]) {
-      b.box(M.sandstone, hx - 1.2, 0, hz + s * (W / 2 - 3.4), D + 2.4, EAVES + 3.4, 6.8);
-      b.mould(M.stonePale, hx - 1.2, EAVES + 2.3, hz + s * (W / 2 - 3.4), D + 2.9, 7.3, PROFILE.cornice);
-      b.hip(M.slate, hx - 1.2, EAVES + 3.4, hz + s * (W / 2 - 3.4), D + 2.9, 7.3, 6.4, 0.1);
-      b.cyl(M.gold, hx - 1.2, EAVES + 9.8, hz + s * (W / 2 - 3.4), 0.08, 0.1, 1.8, 6);
-    }
-    // the ground-floor arcade and shopfronts
-    const face = hx - D / 2;
-    b.tier(1);
-    for (let i = -3; i <= 3; i++) {
-      b.place(M.stonePale, b.p('roundArchRing', 3.0, 4.0, 0.36, 0.8, { steps: 5, bevel: 0.05 }),
-        face - 0.05, 0.3, hz + i * 3.7, { rotY: Math.PI / 2 });
-      b.tier(0).box(M.litGlass, face + 0.2, 0.4, hz + i * 3.7, 0.3, 3.2, 2.5, { solid: false });
-      b.tier(1);
-    }
-    /* the four mamlasi: monumental atlantes taking the balcony on their arms */
-    for (const dz of [-9.6, -3.2, 3.2, 9.6]) {
-      b.tier(0).box(M.stonePale, face - 0.95, 5.6, hz + dz, 1.7, 0.6, 1.7, { solid: false });
-      b.tier(1).place(M.stonePale, b.p('figure', 'atlas', dz), face - 0.95, 6.2, hz + dz,
-        { scale: 2.9, rotY: -Math.PI / 2 });
-    }
-    b.tier(0);
-    // the balcony they carry, with its balustrade
-    b.box(M.stonePale, face - 1.5, 9.9, hz, 3.2, 0.55, W - 2.4, { solid: false });
-    b.mould(M.stonePale, face - 1.5, 9.5, hz, 3.4, W - 2.2, PROFILE.cornice);
-    b.balustrade(face - 2.9, 10.45, hz, W - 2.6, { h: 1.15, rotY: Math.PI / 2 });
-    // upper storeys: real window surrounds
-    b.tier(0);
-    for (let f = 0; f < 3; f++) {
-      for (let i = -3; i <= 3; i++) {
-        b.window(face - 0.06, 11.0 + f * 3.4, hz + i * 3.7, 1.6, 2.5,
-          { kind: 'baroque', rotY: Math.PI / 2 });
-      }
-    }
-    b.tier(1);
-    for (let i = -3; i <= 3; i += 2) {
-      b.place(M.stonePale, b.p('urn', 2.0), face + 0.4, EAVES - 0.3, hz + i * 3.7, {});
-    }
-  }
-
-  /* ================= 4. Schwanzův palác / Dům pánů z Lipé ========== */
-  // Renaissance: two cylindrical corner oriels on relief parapets.
-  {
-    const hx = -44, hz = -30, W = 28, D = 20, EAVES = 17;
-    b.tier(0);
-    b.box(M.sandstone, hx, 0, hz, D, EAVES, W);
-    b.mould(M.stonePale, hx, 0, hz, D + 0.6, W + 0.6, PROFILE.plinth);
-    b.mould(M.stonePale, hx, EAVES - 1.0, hz, D + 0.5, W + 0.5, PROFILE.cornice);
-    b.gable(M.roof, hx, EAVES, hz, D + 1, W + 1, 6.0);
-    const face = hx + D / 2;
-    // the two cylindrical oriels, corbelled out at first-floor level
-    for (const s of [-1, 1]) {
-      const oz2 = hz + s * (W / 2 - 4.0);
-      b.cyl(M.stonePale, face + 0.4, 4.8, oz2, 2.1, 1.5, 1.0, 14, { solid: false });
-      b.cyl(M.sandstone, face + 0.4, 5.8, oz2, 2.1, 2.1, 8.4, 14, { solid: false });
-      b.mould(M.stonePale, face + 0.4, 14.2, oz2, 0, 0, PROFILE.cornice, { path: polyPath(14, 2.3) });
-      b.cone(M.slate, face + 0.4, 14.8, oz2, 2.6, 3.4, 14);
-      // the figural relief parapet under the oriel windows
-      b.tier(1);
-      for (let k = 0; k < 7; k++) {
-        const a = -Math.PI / 2 + (k - 3) * 0.34;
-        b.place(M.stonePale, b.p('quatrefoilPanel', 0.95, 1.1, 0.2),
-          face + 0.4 + Math.cos(a) * 2.15, 6.1, oz2 + Math.sin(a) * 2.15, { rotY: -a - Math.PI / 2 });
-      }
-      b.tier(0);
-      for (let f = 0; f < 2; f++) {
-        for (let k = -1; k <= 1; k++) {
-          const a = -Math.PI / 2 + k * 0.5;
-          b.raw(M.litGlass, new THREE.BoxGeometry(1.1, 2.0, 0.2).rotateY(-a - Math.PI / 2)
-            .translate(face + 0.4 + Math.cos(a) * 2.05, 8.0 + f * 3.6, oz2 + Math.sin(a) * 2.05));
-        }
-      }
-    }
-    // the arcaded courtyard entrance
-    b.tier(1).place(M.stonePale, b.p('roundArchRing', 4.4, 6.0, 0.5, 1.0, { steps: 6, bevel: 0.06 }),
-      face - 0.05, 0.2, hz, { rotY: -Math.PI / 2 });
-    b.tier(0).box(M.doorway, face - 0.7, 0.2, hz, 0.7, 5.0, 3.6, { solid: false });
-    for (let f = 0; f < 3; f++) {
-      for (const i of [-2, -1, 1, 2]) {
-        b.window(face + 0.06, 7.0 + f * 3.3, hz + i * 3.9, 1.5, 2.4,
-          { kind: 'baroque', rotY: -Math.PI / 2 });
-      }
-    }
-    b.tier(1);
-    for (const i of [-1, 0, 1]) {
-      b.place(M.stonePale, b.p('urn', 2.2), face - 0.5, EAVES - 0.2, hz + i * 7.0, {});
-    }
-  }
-
-  /* ================= 5. Palác Omega — the modern intrusion ========= */
-  {
-    const hx = 44, hz = 4, W = 24, D = 18, H = 22;
-    b.tier(0);
-    b.box(M.granite, hx, 0, hz, D, H, W);
-    const face = hx - D / 2;
-    // a rhythmic, irregular grid of green glass squares and verticals
-    for (let f = 0; f < 6; f++) {
-      for (let i = 0; i < 7; i++) {
-        const tall = ((f * 7 + i) % 5) === 0;
-        const gz = hz - W / 2 + 1.9 + i * 3.35;
-        b.raw(M.glass, new THREE.BoxGeometry(0.24, tall ? 5.6 : 2.4, 2.5)
-          .translate(face - 0.1, 2.4 + f * 3.4 + (tall ? 1.2 : 0), gz));
-      }
-    }
-    b.mould(M.stonePale, hx, H - 0.9, hz, D + 0.4, W + 0.4, PROFILE.cap);
-    b.box(M.metal, hx, H, hz, D - 2, 0.5, W - 2, { solid: false });
-  }
-
-  /* ================= 6. tram shelters ============================= */
-  }
-  // Shelters are placed from the imported tram centreline by city/props.
-  for (const [sx, sz] of []) {
-    b.tier(0);
-    b.box(M.metal, sx, 0, sz, 9, 0.22, 3.4, { solid: false });
-    for (let i = -1; i <= 1; i++) {
-      b.box(M.shelterGlass, sx + i * 2.9, 0.3, sz - 1.6, 2.55, 2.3, 0.08, { solid: false });
-      b.box(M.metal, sx + i * 2.9 + 1.45, 0.3, sz - 1.6, 0.12, 2.5, 0.16, { solid: false });
-    }
-    b.solid(sx, sz - 1.6, 9, 0.45, 0, 2.6, 'prop'); // only the back wall stops you
-    b.box(M.metal, sx, 2.6, sz, 9.6, 0.26, 4, { solid: false });
-    for (const c of [-4.3, 4.3]) b.cyl(M.metal, sx + c, 0, sz + 1.5, 0.1, 0.1, 2.7, 6, {});
-    b.box(M.litGlass, sx + 3.2, 0.8, sz - 1.5, 1.4, 1.0, 0.1, { solid: false });
-  }
+  /* The three named frontages and the tram shelters that used to be authored
+   * here are gone: the frontages are raised from their OSM shells (see the
+   * module comment) and the shelters are placed on the imported tram
+   * centreline by src/city/props.js. Both were duplicating what the
+   * geospatial city already builds, a few metres off the real line. */
 
   info.svoboda = {
     name: 'Náměstí Svobody',

@@ -43,21 +43,41 @@ function paintPolygon(grid, poly, flag) {
   grid.paintBounds(b.minX, b.minZ, b.maxX, b.maxZ, flag, (x, z) => polygonContains(poly, x, z));
 }
 
-function roadStyle(roadOrKind) {
-  const road = typeof roadOrKind === 'string' ? { kind: roadOrKind } : roadOrKind;
-  if (['paving_stones', 'sett', 'cobblestone', 'unhewn_cobblestone'].includes(road.surface)) return 'sett';
-  if (road.kind === 'pedestrian' || road.kind === 'footway' || road.kind === 'path' || road.kind === 'steps') return 'sett';
+const SETT_SURFACES = ['paving_stones', 'sett', 'cobblestone', 'unhewn_cobblestone'];
+const SETT_KINDS = ['pedestrian', 'footway', 'path', 'steps'];
+
+function roadStyle(road) {
+  if (SETT_SURFACES.includes(road.surface)) return 'sett';
+  if (SETT_KINDS.includes(road.kind)) return 'sett';
   return 'asphalt';
 }
 
 const compareStrings = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+
+/** OSM ids of the squares the visual overrides single out for hero treatment. */
+function heroAreaIds(overrides) {
+  const ids = new Set();
+  for (const site of Object.values(overrides?.sites || {})) {
+    if (site.areaId) ids.add(site.areaId);
+  }
+  return ids;
+}
+
+/** OSM ids of the areas whose outline should be edged with a kerb. */
+function kerbedAreaIds(overrides) {
+  const ids = new Set();
+  for (const site of Object.values(overrides?.sites || {})) {
+    if (site.areaId && site.kerb) ids.add(site.areaId);
+  }
+  return ids;
+}
 
 /**
  * Build the geospatial street-life layout without mutating the legacy module
  * fixtures. This keeps buildCity re-entrant and prevents the geospatial path
  * from changing a later procedural build in the same process.
  */
-export function installImportedLayout(map) {
+export function installImportedLayout(map, visualOverrides = null) {
   const places = Object.fromEntries(
     Object.entries(map.places).map(([key, value]) => [key, { ...value }]),
   );
@@ -89,7 +109,9 @@ export function installImportedLayout(map) {
       });
     }
   }
-  const heroAreas = new Set(['way/4934858', 'way/8153695']);
+  // Props are budgeted to sixty squares. Sort the hero squares to the front so
+  // the cut never lands on Náměstí Svobody or Zelný trh.
+  const heroAreas = heroAreaIds(visualOverrides);
   plazas.sort((a, b) => Number(heroAreas.has(b.id)) - Number(heroAreas.has(a.id))
     || compareStrings(String(a.id), String(b.id)));
   plazas.length = Math.min(60, plazas.length);
@@ -206,56 +228,83 @@ export function addDrapedPolygon(batchFor, poly, terrain, lift = 0.045, maxSpan 
   }
 }
 
-export function addRoad(batchOrFor, points, width, terrain, lift = 0.06, lateralOffset = 0, maxSpan = 4) {
-  const batchFor = typeof batchOrFor === 'function' ? batchOrFor : () => batchOrFor;
+/** Signed angle of the left-hand normal of a segment, in the x/z plane. */
+function normalAngle(dx, dz) {
+  return Math.atan2(dx, -dz);
+}
+
+/** Shortest signed turn from `from` to `to`. */
+function angleDelta(from, to) {
+  let delta = to - from;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta <= -Math.PI) delta += Math.PI * 2;
+  return delta;
+}
+
+export function addRoad(batchFor, points, width, terrain, lift = 0.06, lateralOffset = 0, maxSpan = 4) {
   const half = width / 2;
+  const p = (x, z) => [x, terrain.heightAt(x, z) + lift, z];
   for (let i = 1; i < points.length; i++) {
     const [sourceAx, sourceAz] = points[i - 1]; const [sourceBx, sourceBz] = points[i];
     const sourceDx = sourceBx - sourceAx; const sourceDz = sourceBz - sourceAz;
     const sourceLength = Math.hypot(sourceDx, sourceDz);
+    // The strip is draped on the heightfield, so a long segment has to be cut
+    // into spans short enough to follow it instead of tunnelling through.
     const pieces = Math.max(1, Math.ceil(sourceLength / maxSpan));
     for (let piece = 0; piece < pieces; piece++) {
-    const t0 = piece / pieces; const t1 = (piece + 1) / pieces;
-    const ax = sourceAx + sourceDx * t0; const az = sourceAz + sourceDz * t0;
-    const bx = sourceAx + sourceDx * t1; const bz = sourceAz + sourceDz * t1;
-    const dx = bx - ax; const dz = bz - az; const len = Math.hypot(dx, dz);
-    if (len < 0.05) continue;
-    const sideX = -dz / len; const sideZ = dx / len;
-    const nx = sideX * half; const nz = sideZ * half;
-    const ox = sideX * lateralOffset; const oz = sideZ * lateralOffset;
-    const p = (x, z) => [x, terrain.heightAt(x, z) + lift, z];
-    const a = p(ax + ox + nx, az + oz + nz); const b = p(bx + ox + nx, bz + oz + nz);
-    const c = p(bx + ox - nx, bz + oz - nz); const d = p(ax + ox - nx, az + oz - nz);
-    batchFor((ax + bx) / 2, (az + bz) / 2).quad4(
-      a, b, c, d, [0, 0], [0, len / 6], [width / 6, len / 6], [width / 6, 0],
-    );
+      const t0 = piece / pieces; const t1 = (piece + 1) / pieces;
+      const ax = sourceAx + sourceDx * t0; const az = sourceAz + sourceDz * t0;
+      const bx = sourceAx + sourceDx * t1; const bz = sourceAz + sourceDz * t1;
+      const dx = bx - ax; const dz = bz - az; const len = Math.hypot(dx, dz);
+      if (len < 0.05) continue;
+      const sideX = -dz / len; const sideZ = dx / len;
+      const nx = sideX * half; const nz = sideZ * half;
+      const ox = sideX * lateralOffset; const oz = sideZ * lateralOffset;
+      const a = p(ax + ox + nx, az + oz + nz); const b = p(bx + ox + nx, bz + oz + nz);
+      const c = p(bx + ox - nx, bz + oz - nz); const d = p(ax + ox - nx, az + oz - nz);
+      batchFor((ax + bx) / 2, (az + bz) / 2).quad4(
+        a, b, c, d, [0, 0], [0, len / 6], [width / 6, len / 6], [width / 6, 0],
+      );
     }
   }
-  // A small fan closes the wedge between adjacent segments at bends.
-  if (lateralOffset === 0 && width > 0.3) for (let i = 1; i + 1 < points.length; i++) {
-    const [x, z] = points[i];
-    const y = terrain.heightAt(x, z) + lift;
+  if (lateralOffset !== 0 || width <= 0.3) return;
+  /* Close the wedge that opens on the outside of a bend. Only the arc the
+   * turn actually sweeps is filled, and only when the gap it leaves is wide
+   * enough to see: a full disc at every vertex cost 63k triangles on the
+   * committed map, roughly half of them at vertices that barely bend. */
+  for (let i = 1; i + 1 < points.length; i++) {
+    const [px, pz] = points[i - 1]; const [x, z] = points[i]; const [qx, qz] = points[i + 1];
+    const from = normalAngle(x - px, z - pz);
+    const delta = angleDelta(from, normalAngle(qx - x, qz - z));
+    if (half * Math.abs(delta) < 0.12) continue;
+    const steps = Math.max(1, Math.ceil(Math.abs(delta) / (Math.PI / 8)));
+    const lo = Math.min(from, from + delta);
+    const centre = p(x, z);
     const batch = batchFor(x, z);
-    const steps = 8;
-    for (let k = 0; k < steps; k++) {
-      const a = (k / steps) * Math.PI * 2;
-      const b = ((k + 1) / steps) * Math.PI * 2;
-      batch.tri(
-        [x, y, z], [x + Math.cos(b) * half, terrain.heightAt(x + Math.cos(b) * half, z + Math.sin(b) * half) + lift, z + Math.sin(b) * half],
-        [x + Math.cos(a) * half, terrain.heightAt(x + Math.cos(a) * half, z + Math.sin(a) * half) + lift, z + Math.sin(a) * half],
-        [0.5, 0.5], [0.5 + Math.cos(b) * 0.5, 0.5 + Math.sin(b) * 0.5], [0.5 + Math.cos(a) * 0.5, 0.5 + Math.sin(a) * 0.5],
-      );
+    const rim = (angle) => p(x + Math.cos(angle) * half, z + Math.sin(angle) * half);
+    const uv = (point) => [point[0] / 6, point[2] / 6];
+    // The gap sits on one side of the joint and an overlap on the other, and
+    // which is which flips with the turn direction. Filling both arcs costs
+    // one extra triangle and is always right.
+    for (const base of [lo, lo + Math.PI]) {
+      for (let k = 0; k < steps; k++) {
+        const inner = rim(base + (Math.abs(delta) * k) / steps);
+        const outer = rim(base + (Math.abs(delta) * (k + 1)) / steps);
+        batch.tri(centre, outer, inner, uv(centre), uv(outer), uv(inner));
+      }
     }
   }
 }
 
-export function buildImportedPlan(group, map, terrain, chunks = null) {
+export function buildImportedPlan(group, map, terrain, chunks = null, visualOverrides = null) {
   const flags = new FlagGrid();
   flags.fill(FLAG.FREE);
   const targetChunks = chunks || new Chunks({ cells: 11, detailRadius: 180 });
   const ownsChunks = !chunks;
   const before = targetChunks.entries.size;
   const batchFor = (mat, x, z) => targetChunks.get(mat, x, z, TIER.NOSHADOW);
+  const kerbed = kerbedAreaIds(visualOverrides);
+  const kerbMat = getMaterial('kerb');
 
   for (const area of map.areas) {
     const flag = area.kind === 'park' ? FLAG.PARK
@@ -269,9 +318,10 @@ export function buildImportedPlan(group, map, terrain, chunks = null) {
         terrain,
         area.kind === 'water' ? 0.02 : 0.045,
       );
-      if (area.id === 'way/4934858') {
-        const kerb = getMaterial('kerb');
-        for (const ring of poly) addRoad((x, z) => batchFor(kerb, x, z), ring, 0.22, terrain, 0.085, 0, 3);
+      if (kerbed.has(area.id)) {
+        for (const ring of poly) {
+          addRoad((x, z) => batchFor(kerbMat, x, z), ring, 0.22, terrain, 0.085, 0, 3);
+        }
       }
     }
   }
@@ -340,12 +390,20 @@ function distanceToSegment(x, z, a, b) {
   return Math.hypot(x - a.x - dx * t, z - a.z - dz * t);
 }
 
-function onHeroRoute(x, z, map, overrides) {
+/**
+ * The corridor the player actually walks: the squares on the authored hero
+ * route plus the streets between them. Buildings inside it get banded facades
+ * and cornices; everything else stays plain massing.
+ */
+function heroCorridor(map, overrides) {
   const route = (overrides?.heroRoute || []).map((key) => map.places[key]).filter(Boolean);
-  if (!route.length) return false;
-  for (const place of route) if (Math.hypot(x - place.x, z - place.z) < 95) return true;
-  for (let i = 1; i < route.length; i++) if (distanceToSegment(x, z, route[i - 1], route[i]) < 72) return true;
-  return false;
+  return (x, z) => {
+    for (const place of route) if (Math.hypot(x - place.x, z - place.z) < 95) return true;
+    for (let i = 1; i < route.length; i++) {
+      if (distanceToSegment(x, z, route[i - 1], route[i]) < 72) return true;
+    }
+    return false;
+  };
 }
 
 function facadeStyle(building, recipe) {
@@ -368,6 +426,31 @@ function ringArea(ring) {
   let area = 0;
   for (let i = 1; i < ring.length; i++) area += ring[i - 1][0] * ring[i][1] - ring[i][0] * ring[i - 1][1];
   return Math.abs(area) / 2;
+}
+
+/**
+ * Drop vertices that only restate a straight edge.
+ *
+ * OSM footprints routinely carry nodes shared with a neighbour's wall or left
+ * behind by an old trace, so a plain rectangle can arrive with a dozen
+ * corners. The roof fitter counts corners to decide whether a gable can sit on
+ * a footprint, and without this it read those rectangles as free-form blocks
+ * and capped them flat — which is most of why the roofscape came out level.
+ */
+export function simplifyRing(ring, tolerance = 0.3) {
+  if (ring.length < 5) return ring;
+  const points = ring.slice(0, -1);
+  const kept = [];
+  for (let i = 0; i < points.length; i++) {
+    const p = points[(i - 1 + points.length) % points.length];
+    const q = points[i];
+    const r = points[(i + 1) % points.length];
+    const base = Math.hypot(r[0] - p[0], r[1] - p[1]);
+    const cross = Math.abs((q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]));
+    if (!base || cross / base > tolerance) kept.push(q);
+  }
+  if (kept.length < 3) return ring;
+  return kept.concat([kept[0]]);
 }
 
 export function orientedBounds(ring) {
@@ -448,6 +531,48 @@ function bandForHeight(localBottom, localTop, height, shopfront = false) {
   return bands;
 }
 
+/**
+ * Raise the facade shell of one footprint, band by band.
+ *
+ * `batchFor(band)` hands back the batch for a band's material, so the caller
+ * owns the material choice and this stays testable without a canvas.
+ *
+ * Bands split the wall at flat break lines measured from `foundation`, which
+ * is sampled once at the footprint centre. Only the bands above the ground
+ * floor can honour that: the ground band follows the terrain at each corner
+ * instead. Clamping it to the foundation as well left two fifths of the
+ * committed stock hanging over its own downhill wall, by up to ten metres
+ * under the terraces on Petrov.
+ */
+export function addFootprintWalls(batchFor, poly, bands, terrain, minHeight = 0) {
+  for (const ring of poly) {
+    for (let i = 1; i < ring.length; i++) {
+      const [ax, az] = ring[i - 1]; const [bx, bz] = ring[i];
+      const len = Math.hypot(bx - ax, bz - az);
+      if (len < 0.1) continue;
+      const ay = terrain.heightAt(ax, az) + minHeight;
+      const by = terrain.heightAt(bx, bz) + minHeight;
+      for (let b = 0; b < bands.length; b++) {
+        const [band, bandBottom, bandTop] = bands[b];
+        const bottomA = b === 0 ? ay : Math.max(ay, bandBottom);
+        const bottomB = b === 0 ? by : Math.max(by, bandBottom);
+        if (bandTop <= Math.max(bottomA, bottomB) + 0.05) continue;
+        // polygon-clipping normalizes outer rings counter-clockwise and
+        // courtyard rings clockwise. In both cases the empty side of the
+        // boundary is to the right, so emit B->A to point the wall normal out
+        // of the occupied building volume. A->B made whole street walls
+        // disappear under back-face culling, leaving only their cornices and
+        // roofs apparently floating over the square.
+        batchFor(band).quad4(
+          [bx, bottomB, bz], [ax, bottomA, az], [ax, bandTop, az], [bx, bandTop, bz],
+          [0, bottomB / 3.4], [len / 3.1, bottomA / 3.4],
+          [len / 3.1, bandTop / 3.4], [0, bandTop / 3.4],
+        );
+      }
+    }
+  }
+}
+
 export function buildImportedBuildings(group, collision, map, terrain, chunks, visualOverrides = null) {
   const wallSets = new Map();
   const roofSets = new Map();
@@ -455,6 +580,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
   const centralShadowMass = new Batch();
   const excluded = siteExclusions(visualOverrides);
   const recipes = facadeRecipes(visualOverrides);
+  const onHeroRoute = heroCorridor(map, visualOverrides);
   const detailMat = getMaterial('concrete', { color: '#c8bfae' });
   const entryFor = (sets, material, x, z) => {
     let byCell = sets.get(material);
@@ -476,16 +602,20 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
       if (poly.length > 1) courtyards += poly.length - 1;
       const bounds = boundsOfPolygon(poly);
       const cx = (bounds.minX + bounds.maxX) / 2; const cz = (bounds.minZ + bounds.maxZ) / 2;
-      const detailedHere = onHeroRoute(cx, cz, map, visualOverrides);
+      const central = chunks.cellOf(cx, cz) === centralCell;
+      const detailedHere = onHeroRoute(cx, cz);
       const lit = detailedHere && litBuilding;
       const taggedShape = building.roof?.shape;
       const modern = recipe === 'omega' || /commercial|office|industrial|warehouse/.test(building.use || '')
         || (building.levels || 0) >= 7;
       let roofShape = taggedShape || (modern ? 'flat' : 'gabled');
-      const oriented = orientedBounds(poly[0]);
-      const rectangular = oriented && poly.length === 1 && poly[0].length <= 6
-        && ringArea(poly[0]) / Math.max(1, oriented.width * oriented.depth) > 0.9;
-      if (!rectangular && roofShape !== 'flat' && roofShape !== 'skillion') roofShape = 'flat';
+      const outline = simplifyRing(poly[0]);
+      const oriented = orientedBounds(outline);
+      const rectangular = oriented && poly.length === 1 && outline.length <= 6
+        && ringArea(outline) / Math.max(1, oriented.width * oriented.depth) > 0.9;
+      // Every pitched form is fitted to the oriented bounding box, so a
+      // free-form footprint can only be capped flat.
+      if (!rectangular) roofShape = 'flat';
       const defaultRoof = Math.max(2.2, Math.min(7.5, Math.min(oriented?.depth || 8, 16) * 0.42));
       const roofHeight = roofShape === 'flat' ? 0 : (building.roof?.height || defaultRoof);
       const totalHeight = Math.max(2.5, building.height - (building.minHeight || 0));
@@ -498,6 +628,11 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
         ? bandForHeight(foundation, top, wallHeight, hasShopfront)
         : [['plain', foundation, top]];
 
+      addFootprintWalls(
+        (band) => entryFor(wallSets, facadeMaterial(style, band, lit), cx, cz),
+        poly, bands, terrain, building.minHeight || 0,
+      );
+
       for (const ring of poly) {
         for (let i = 1; i < ring.length; i++) {
           const [ax, az] = ring[i - 1]; const [bx, bz] = ring[i];
@@ -505,24 +640,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
           if (len < 0.1) continue;
           const ay = terrain.heightAt(ax, az) + (building.minHeight || 0);
           const by = terrain.heightAt(bx, bz) + (building.minHeight || 0);
-          for (const [band, bandBottom, bandTop] of bands) {
-            const material = facadeMaterial(style, band, lit);
-            const batch = entryFor(wallSets, material, cx, cz);
-            const bottomA = Math.max(ay, bandBottom); const bottomB = Math.max(by, bandBottom);
-            if (bandTop <= Math.max(bottomA, bottomB) + 0.05) continue;
-            // polygon-clipping normalizes outer rings counter-clockwise and
-            // courtyard rings clockwise. In both cases the empty side of
-            // the boundary is to the right, so emit B->A to point the wall
-            // normal out of the occupied building volume. A->B made whole
-            // street walls disappear under back-face culling, leaving only
-            // their cornices and roofs apparently floating over the square.
-            batch.quad4(
-              [bx, bottomB, bz], [ax, bottomA, az], [ax, bandTop, az], [bx, bandTop, bz],
-              [0, bandBottom / 3.4], [len / 3.1, bandBottom / 3.4],
-              [len / 3.1, bandTop / 3.4], [0, bandTop / 3.4],
-            );
-          }
-          if (chunks.cellOf(cx, cz) === centralCell) {
+          if (central) {
             centralShadowMass.quad4(
               [bx, by, bz], [ax, ay, az], [ax, top, az], [bx, top, bz],
               [0, 0], [len / 4, 0], [len / 4, wallHeight / 4], [0, wallHeight / 4],
@@ -550,30 +668,25 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
       const roofMat = roofMaterial(building);
       const roofBatch = entryFor(roofSets, roofMat, cx, cz);
       const emitRoof = (target) => {
-        if (roofShape === 'gabled' && rectangular) {
+        if (roofShape === 'gabled') {
           target.gable(oriented.cx, top, oriented.cz, oriented.width, oriented.depth,
             roofHeight, oriented.rotation, 4);
-        } else if (['hipped', 'pyramidal', 'mansard'].includes(roofShape) && rectangular) {
-          addHipRoof(target, oriented, top, roofHeight, roofShape === 'mansard');
-        } else if (roofShape === 'skillion' && rectangular) {
+        } else if (roofShape === 'skillion') {
           const hw = oriented.width / 2; const hd = oriented.depth / 2;
           const a = pointOnBox(oriented, -hw, -hd, top); const b = pointOnBox(oriented, hw, -hd, top);
-          const c = pointOnBox(oriented, hw, hd, top + roofHeight); const d = pointOnBox(oriented, -hw, hd, top + roofHeight);
+          const c = pointOnBox(oriented, hw, hd, top + roofHeight);
+          const d = pointOnBox(oriented, -hw, hd, top + roofHeight);
           target.quad4(a, b, c, d, [0, 0], [oriented.width / 4, 0],
             [oriented.width / 4, oriented.depth / 4], [0, oriented.depth / 4]);
+        } else if (roofShape !== 'flat') {
+          addHipRoof(target, oriented, top, roofHeight, roofShape === 'mansard');
         } else {
           addFlatRoof(target, poly, top);
         }
       };
       emitRoof(roofBatch);
-      if (chunks.cellOf(cx, cz) === centralCell) emitRoof(centralShadowMass);
-      if (roofShape === 'gabled' && rectangular) {
-        pitchedRoofs++;
-      } else if (['hipped', 'pyramidal', 'mansard'].includes(roofShape) && rectangular) {
-        pitchedRoofs++;
-      } else if (roofShape === 'skillion' && rectangular) {
-        pitchedRoofs++;
-      }
+      if (central) emitRoof(centralShadowMass);
+      if (roofShape !== 'flat') pitchedRoofs++;
       if (detailedHere) detailed++;
       count++;
     }
@@ -581,7 +694,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
 
   let meshes = 0;
   for (const [material, cells] of wallSets) {
-    for (const [cell, batch] of cells) {
+    for (const batch of cells.values()) {
       const geo = batch.geometry();
       if (!geo) continue;
       const mesh = new THREE.Mesh(geo, material);

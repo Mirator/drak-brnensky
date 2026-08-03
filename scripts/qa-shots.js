@@ -50,7 +50,8 @@ const freeBetween = (name, eyeKey, eyeOffset, targetKey, targetOffset, fov) => {
 };
 const followAt = (name, key, offset, yaw, opts = {}) => {
   const p = place(key);
-  return follow(name, [p.x + offset[0], ground(key), p.z + offset[1]], yaw, opts);
+  return follow(name, [p.x + offset[0], ground(key), p.z + offset[1]], yaw,
+    { lookAt: [p.x, p.z], ...opts });
 };
 
 export const VIEWS = [
@@ -62,7 +63,9 @@ export const VIEWS = [
   freeAt('spilberk-walls', 'spilberk', [0, 26, 72], [0, 24, 18], 62),
   freeBetween('radnice-tower', 'zelnyTrh', [0, 14, 42], 'radnice', [0, 30, 0], 58),
   freeBetween('radnice-portal', 'zelnyTrh', [0, 5, -36], 'radnice', [0, 9, 1], 62),
-  freeAt('svoboda-wide', 'svoboda', [18, 14, 65], [4, 10, -9], 58),
+  // Down the square's own axis, orloj to Marian column: the offsets that used
+  // to frame this from the south now sit inside the rebuilt east frontage.
+  freeBetween('svoboda-wide', 'orloj', [20, 22, 18], 'column', [0, 8, 0], 54),
   freeAt('zelny-parnas', 'zelnyTrh', [0, 8, 38], [0, 7, 0], 60),
   freeAt('nadrazi', 'nadrazi', [0, 16, 38], [0, 12, -24], 58),
   freeAt('moravske', 'moravske', [0, 13, 64], [0, 9, 2], 58),
@@ -95,13 +98,62 @@ function settle(frames = 24, dt = 1 / 60) {
   }
 }
 
-function placePlayer(at, yaw) {
+/**
+ * Move a standing position out of whatever it landed inside.
+ *
+ * The follow views are authored as fixed offsets from a landmark, and the
+ * imported building stock moved under them: `petrov-approach` put the player
+ * inside the nave and came back as a wall of masonry, which reads like a
+ * render bug and is not one. This is the ground-level counterpart of the
+ * retreat `placeFreeCamera` already does — back away along the composition
+ * line first, so the whole subject stays in frame rather than one wall of it,
+ * and only spiral if that never clears.
+ */
+function clearOf(x, z, y, lookAt = null) {
   const b = g();
-  b.player.pos.set(at[0], at[1] + 2, at[2]);
+  const solid = (px, pz) => b.collision?.isSolidAt?.(px, y, pz);
+  if (!b.collision?.isSolidAt) return [x, z];
+  if (!solid(x, z)) return [x, z];
+
+  if (lookAt) {
+    const dx = x - lookAt[0]; const dz = z - lookAt[1];
+    const length = Math.hypot(dx, dz);
+    if (length > 0.5) {
+      for (let extra = 8; extra <= 140; extra += 8) {
+        const px = x + (dx / length) * extra;
+        const pz = z + (dz / length) * extra;
+        // Require clearance a little further out too, so a courtyard or a
+        // gateway does not read as open ground.
+        if (!solid(px, pz) && !solid(px + (dx / length) * 6, pz + (dz / length) * 6)) {
+          return [px, pz];
+        }
+      }
+    }
+  }
+
+  for (let radius = 4; radius <= 48; radius += 4) {
+    for (let step = 0; step < 12; step++) {
+      const angle = (step / 12) * Math.PI * 2;
+      const px = x + Math.cos(angle) * radius;
+      const pz = z + Math.sin(angle) * radius;
+      if (!solid(px, pz)) return [px, pz];
+    }
+  }
+  return [x, z];
+}
+
+function placePlayer(at, yaw, lookAt = null) {
+  const b = g();
+  const [x, z] = clearOf(at[0], at[2], at[1] + 2, lookAt);
+  b.player.pos.set(x, at[1] + 2, z);
   b.player.vel.set(0, 0, 0);
   b.player.health = b.player.maxHealth;
   b.player.alive = true;
-  b.chase.yaw = yaw;
+  // The authored yaw aims at the view's subject from the authored stand. If
+  // the stand had to move, re-aim at the subject rather than keeping a
+  // heading that now points at a side street.
+  const moved = Math.hypot(x - at[0], z - at[2]) > 0.01;
+  b.chase.yaw = moved && lookAt ? Math.atan2(lookAt[0] - x, lookAt[1] - z) : yaw;
   b.chase.pitch = -0.08;
   b.chase._first = true;
 }
@@ -113,18 +165,19 @@ async function applyView(view) {
   if (view.kind === 'follow') {
     if (view.wave) {
       b.startWave(view.wave);
-      placePlayer(view.at, view.yaw);
+      placePlayer(view.at, view.yaw, view.lookAt);
       settle(40);
       // the boss spawns wherever its wave definition says; find it and stand
       // off from it so it is actually in frame rather than behind the camera
       const bossEnemy = b.enemies.list.find((e) => e.typeId === 'boss' && e.hp > 0);
       if (bossEnemy) {
         const standoff = view.standoff || 26;
-        placePlayer([bossEnemy.pos.x, 0, bossEnemy.pos.z + standoff], Math.PI);
+        placePlayer([bossEnemy.pos.x, 0, bossEnemy.pos.z + standoff], Math.PI,
+          [bossEnemy.pos.x, bossEnemy.pos.z]);
         settle(30);
       }
     } else {
-      placePlayer(view.at, view.yaw);
+      placePlayer(view.at, view.yaw, view.lookAt);
       settle(40);
       /* Spawn into the camera's forward arc, not around the full circle.
        * Spawning uniformly in a ring put most of the creatures behind the
