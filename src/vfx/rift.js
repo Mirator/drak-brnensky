@@ -186,14 +186,9 @@ function buildGeometry(scale) {
 
 const _v = new THREE.Vector3();
 
-/**
- * @param {object} fx  the VFX facade — the rift borrows its shared particle,
- *                     decal, shockwave and light pools rather than owning any.
- */
-export function createRift(fx, scene, shared, pos, scale = 1) {
-  const geo = buildGeometry(scale);
-  const seed = ((Math.abs(pos.x) * 7.31 + Math.abs(pos.z) * 3.77) % 10) / 10;
-  const mat = new THREE.ShaderMaterial({
+/** One material per rift: uSeed, uOpen and uCollapse are all per-instance. */
+function riftMaterial(shared, seed) {
+  return new THREE.ShaderMaterial({
     uniforms: withShared(shared, {
       uSeed: { value: seed },
       uOpen: { value: 0 },
@@ -212,6 +207,42 @@ export function createRift(fx, scene, shared, pos, scale = 1) {
     side: THREE.DoubleSide,
     ...PREMULTIPLIED,
   });
+}
+
+/**
+ * Park the rift program in three's cache at boot.
+ *
+ * Every rift needs its own material, but they all share this file's shader
+ * source, so three keys them to a single program — and whichever rift is
+ * drawn first pays for compiling it. That is always the frame a wave starts
+ * on, alongside the first draw of half the particle layers, which is exactly
+ * the frame that can least afford ~300 ms. So one hidden mesh goes into the
+ * scene before the boot-time prewarm instead. It is never drawn and never
+ * disposed: three releases a program when the last material using it is
+ * disposed, and rifts are disposed every time one is sealed.
+ *
+ * Must be constructed through `riftMaterial()` — the program cache key covers
+ * material properties like `side`, so a hand-rolled warm-up material could
+ * quietly warm a variant no rift ever asks for.
+ *
+ * @returns {THREE.Mesh} the parked mesh, for the caller to hold on to.
+ */
+export function warmRiftProgram(scene, shared) {
+  const mesh = new THREE.Mesh(buildGeometry(1), riftMaterial(shared, 0));
+  mesh.name = 'rift.prewarm';
+  mesh.visible = false;
+  scene.add(mesh);
+  return mesh;
+}
+
+/**
+ * @param {object} fx  the VFX facade — the rift borrows its shared particle,
+ *                     decal, shockwave and light pools rather than owning any.
+ */
+export function createRift(fx, scene, shared, pos, scale = 1) {
+  const geo = buildGeometry(scale);
+  const seed = ((Math.abs(pos.x) * 7.31 + Math.abs(pos.z) * 3.77) % 10) / 10;
+  const mat = riftMaterial(shared, seed);
 
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = true;
