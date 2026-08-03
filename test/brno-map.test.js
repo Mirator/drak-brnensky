@@ -381,6 +381,39 @@ test('footprint roofs cover L-shaped plans and refuse the ones they would break'
   assert.equal(ringSelfIntersects([[0, 0], [10, 10], [10, 0], [0, 10], [0, 0]]), true);
 });
 
+test('a perimeter block is roofed round its courtyard, not over it', () => {
+  // 60 x 40 m block built 13 m deep around a 34 x 14 yard: the shape most of
+  // central Brno is made of.
+  const block = [
+    [[0, 0], [60, 0], [60, 40], [0, 40], [0, 0]],
+    [[13, 13], [13, 27], [47, 27], [47, 13], [13, 13]],
+  ];
+  const solid = [block[0]];
+
+  // Counting the yard as masonry says the block is 24 m thick and could carry
+  // a ten-metre ridge. Measuring the built band gives a real wing depth.
+  assert.ok(footprintRoofRise(solid, 20) > 9, 'the solid reading over-estimates');
+  const rise = footprintRoofRise(block, 20);
+  assert.ok(rise > 3 && rise < 6.5, `wing depth gives a plausible ridge, got ${rise}`);
+
+  const roof = new Batch();
+  assert.equal(addFootprintRoof(roof, block, 12, rise), true);
+
+  /* No roof may span the yard: that was the regression. Vertices are allowed
+   * on the yard wall — those are its eaves — so this tests triangle centres. */
+  const yard = [block[1]];
+  for (let i = 0; i < roof.p.length; i += 9) {
+    const cx = (roof.p[i] + roof.p[i + 3] + roof.p[i + 6]) / 3;
+    const cz = (roof.p[i + 2] + roof.p[i + 5] + roof.p[i + 8]) / 3;
+    assert.equal(polygonContains(yard, cx, cz), false,
+      `a roof triangle centred on ${cx.toFixed(1)},${cz.toFixed(1)} spans the courtyard`);
+  }
+  // And both walls carry eaves, so the yard side slopes too.
+  let atEaves = 0;
+  for (let i = 1; i < roof.p.length; i += 3) if (Math.abs(roof.p[i] - 12) < 1e-9) atEaves++;
+  assert.ok(atEaves > 12, 'street wall and courtyard wall both spring from the wall head');
+});
+
 test('a straight bend contributes no joint geometry, a real corner does', () => {
   const terrain = { heightAt: () => 0 };
   const straight = new Batch();

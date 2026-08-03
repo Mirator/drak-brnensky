@@ -29,6 +29,18 @@ export class Batch {
     return this.p.length / 9;
   }
 
+  /**
+   * Copy another batch's triangles in. For geometry that has to land in two
+   * places — a roof that is also part of the shadow proxy — so the expensive
+   * part is built once rather than generated per target.
+   */
+  append(other) {
+    for (let i = 0; i < other.p.length; i++) this.p.push(other.p[i]);
+    for (let i = 0; i < other.n.length; i++) this.n.push(other.n[i]);
+    for (let i = 0; i < other.t.length; i++) this.t.push(other.t[i]);
+    return this;
+  }
+
   /** Triangle with explicit UVs. Winding as given; normal from the cross product. */
   tri(a, b, c, ua, ub, uc) {
     const e1x = b[0] - a[0], e1y = b[1] - a[1], e1z = b[2] - a[2];

@@ -268,10 +268,30 @@ function addDrapedTriangle(batchFor, a, b, c, terrain, lift, maxSpan, depth = 0)
   );
 }
 
+/**
+ * A polygon's rings as THREE.Vector2 contours, ready for triangulation.
+ *
+ * The closing vertex has to go. ShapeUtils.triangulateShape wants open
+ * contours, and a repeated last point is a zero-length edge: harmless on a
+ * plain outline, but with a hole present it produces degenerate triangles that
+ * span the hole instead of cutting it — which is what roofed the courtyards
+ * over when the footprint roof started passing holes through.
+ */
+function shapeRings(poly) {
+  const open = (ring) => {
+    const last = ring.length - 1;
+    const closed = last > 0
+      && Math.abs(ring[0][0] - ring[last][0]) < 1e-9
+      && Math.abs(ring[0][1] - ring[last][1]) < 1e-9;
+    return (closed ? ring.slice(0, last) : ring).map(([x, z]) => new THREE.Vector2(x, z));
+  };
+  const contour = open(poly[0]);
+  const holes = poly.slice(1).map(open).filter((ring) => ring.length >= 3);
+  return { contour, holes, points: contour.concat(...holes) };
+}
+
 export function addDrapedPolygon(batchFor, poly, terrain, lift = 0.045, maxSpan = 4) {
-  const contour = poly[0].map(([x, z]) => new THREE.Vector2(x, z));
-  const holes = poly.slice(1).map((ring) => ring.map(([x, z]) => new THREE.Vector2(x, z)));
-  const points = contour.concat(...holes);
+  const { contour, holes, points } = shapeRings(poly);
   const faces = THREE.ShapeUtils.triangulateShape(contour, holes);
   for (const [a, b, c] of faces) {
     addDrapedTriangle(batchFor, points[a], points[b], points[c], terrain, lift, maxSpan);
@@ -346,6 +366,52 @@ export function addRoad(batchFor, points, width, terrain, lift = 0.06, lateralOf
   }
 }
 
+/**
+ * How wide the carriageway actually is.
+ *
+ * `roadWidth` in the importer falls back to a per-class guess when OSM has no
+ * explicit width, and `lanes` is tagged on 272 roads that were taking that
+ * guess. A four-lane road drawn seven metres wide is why some junctions had
+ * traffic running off the tarmac.
+ */
+function carriagewayWidth(road) {
+  return Math.max(road.width, (road.lanes || 0) * 3.05);
+}
+
+/** Which sides carry a pavement, as lateral-offset signs. */
+function sidewalkSides(road) {
+  // `separate` means OSM maps the pavement as its own footway, which this
+  // already draws; generating one too would double it up.
+  switch (road.sidewalk) {
+    case 'both': return [-1, 1];
+    case 'left': return [-1];
+    case 'right': return [1];
+    default: return [];
+  }
+}
+
+/**
+ * A bridge deck: level between its abutments instead of draped on the ground.
+ *
+ * Eighteen roads are tagged `bridge`, and draping them made each one dip into
+ * whatever it was built to cross. The deck never sinks below the terrain, so a
+ * mis-tagged bridge degrades to an ordinary road rather than a trench.
+ */
+function deckSurface(points, terrain) {
+  const [sx, sz] = points[0];
+  const [ex, ez] = points[points.length - 1];
+  const y0 = terrain.heightAt(sx, sz);
+  const y1 = terrain.heightAt(ex, ez);
+  const dx = ex - sx; const dz = ez - sz;
+  const lengthSq = dx * dx + dz * dz;
+  return {
+    heightAt(x, z) {
+      const t = lengthSq ? Math.max(0, Math.min(1, ((x - sx) * dx + (z - sz) * dz) / lengthSq)) : 0;
+      return Math.max(y0 + (y1 - y0) * t, terrain.heightAt(x, z));
+    },
+  };
+}
+
 export function buildImportedPlan(group, map, terrain, chunks = null, visualOverrides = null) {
   const flags = new FlagGrid();
   flags.fill(FLAG.FREE);
@@ -378,11 +444,27 @@ export function buildImportedPlan(group, map, terrain, chunks = null, visualOver
 
   const asphalt = getMaterial('asphalt');
   const cobble = getMaterial('cobbleRunning');
+  const slab = getMaterial('pavementSlab');
+  const PAVEMENT = 2.2;
   for (const road of map.roads) {
+    /* A road tagged `tunnel=yes` runs under the city, and painting it on the
+     * surface drew 101 phantom streets over the terrain and through the
+     * buildings above them. `building_passage` is an archway at ground level
+     * and stays. */
+    if (road.tunnel === 'yes') continue;
     const points = qLine(road.points);
-    flags.line(points, road.width, FLAG.ROAD);
+    const width = carriagewayWidth(road);
+    const sides = sidewalkSides(road);
+    const surface = road.bridge === 'yes' ? deckSurface(points, terrain) : terrain;
+    flags.line(points, width + (sides.length ? PAVEMENT * 2 : 0), FLAG.ROAD);
     const mat = roadStyle(road) === 'sett' ? cobble : asphalt;
-    addRoad((x, z) => batchFor(mat, x, z), points, road.width, terrain);
+    addRoad((x, z) => batchFor(mat, x, z), points, width, surface);
+    for (const side of sides) {
+      addRoad((x, z) => batchFor(slab, x, z), points, PAVEMENT, surface, 0.115,
+        side * (width + PAVEMENT) / 2);
+      addRoad((x, z) => batchFor(kerbMat, x, z), points, 0.26, surface, 0.135,
+        side * width / 2);
+    }
   }
 
   const railMat = getMaterial('paintedMetal', { seed: 25833, color: '#7b7770' });
@@ -552,12 +634,30 @@ export function frontageRun(ring, boundary, tolerance = 1.5) {
   return run;
 }
 
-function facadeStyle(building, recipe) {
+/* Where OSM records what a wall is actually made of, use it instead of the
+ * hash. Only nineteen buildings carry `building:material` or `building:colour`
+ * in the committed extract, but they are the ones somebody looked at. */
+const MATERIAL_STYLES = { brick: 3, stone: 1 };
+const COLOUR_STYLES = {
+  sand: 4, lightyellow: 4, white: 1, '#211a0f': 3, '#3f311c': 3,
+};
+
+function facadeStyle(building, recipe, parents) {
   if (recipe === 'mamlasu') return 5;
   if (recipe === 'lipy') return 0;
   if (recipe === 'omega') return 2;
   if (/church|cathedral|civic|public/.test(building.use || '')) return 1;
-  return FACADE_STYLES[hashId(building.id) % FACADE_STYLES.length];
+  if (building.material in MATERIAL_STYLES) return MATERIAL_STYLES[building.material];
+  if (building.colour in COLOUR_STYLES) return COLOUR_STYLES[building.colour];
+  /* A building:part belongs to a shell that is drawn separately. Hashing the
+   * part's own id gave one house two or three unrelated plaster colours, so
+   * take the parent's — that is what `parentId` is for. */
+  const owner = (building.part && parents?.get(building.parentId)) || building;
+  if (owner !== building) {
+    if (owner.material in MATERIAL_STYLES) return MATERIAL_STYLES[owner.material];
+    if (owner.colour in COLOUR_STYLES) return COLOUR_STYLES[owner.colour];
+  }
+  return FACADE_STYLES[hashId(owner.id) % FACADE_STYLES.length];
 }
 
 /* Fired clay weathers over a range: fresh orange-red through to the sooted
@@ -767,10 +867,48 @@ function ringMetrics(ring) {
  * what a narrow wing has.
  */
 export function footprintRoofRise(poly, maxRise, pitch = 0.9) {
-  const { perimeter, area } = ringMetrics(simplifyRing(poly[0]));
-  if (perimeter < 1e-6) return 0;
-  const meanWidth = (2 * Math.abs(area)) / perimeter;
+  /* Measure the built band, not the block. A perimeter block's courtyard is
+   * what makes its roof possible: 60 x 40 m of masonry could not carry a 40
+   * degree hip without a twenty-metre ridge, but the same block built fifteen
+   * metres deep around a yard carries one easily. Counting the courtyard as
+   * material is what made these read as plateaux. */
+  let perimeter = 0;
+  let area = 0;
+  for (let i = 0; i < poly.length; i++) {
+    const metrics = ringMetrics(simplifyRing(poly[i]));
+    perimeter += metrics.perimeter;
+    area += i === 0 ? Math.abs(metrics.area) : -Math.abs(metrics.area);
+  }
+  if (perimeter < 1e-6 || area <= 0) return 0;
+  const meanWidth = (2 * area) / perimeter;
   return Math.min(maxRise, meanWidth * 0.45 * pitch);
+}
+
+/** One eaves-to-ridge slope, from `edge` at `top` up to `crest` at `ridge`. */
+function addRoofSkirt(batch, edge, crest, top, ridge, slope) {
+  for (let i = 1; i < edge.length; i++) {
+    const [ax, az] = edge[i - 1]; const [bx, bz] = edge[i];
+    const run = Math.hypot(bx - ax, bz - az);
+    if (run < 1e-6) continue;
+    const c = crest[i % (crest.length - 1)];
+    const e = crest[i - 1];
+    batch.quad4(
+      [ax, top, az], [bx, top, bz], [c[0], ridge, c[1]], [e[0], ridge, e[1]],
+      [0, 0], [run / 4, 0], [run / 4, slope], [0, slope],
+    );
+  }
+}
+
+/** Is `offset` a usable offset of `source` — same winding, simple, contained? */
+function offsetIsSane(offset, source, sourceArea, maxRatio = 0.92) {
+  const area = ringMetrics(offset).area;
+  // A fold-over flips the winding; an over-offset ring balloons or vanishes.
+  if (Math.sign(area) !== Math.sign(sourceArea)) return false;
+  if (Math.abs(area) / Math.abs(sourceArea) > maxRatio) return false;
+  for (let i = 0; i < offset.length - 1; i++) {
+    if (!ringContains(source, offset[i][0], offset[i][1])) return false;
+  }
+  return !ringSelfIntersects(offset);
 }
 
 /**
@@ -788,55 +926,69 @@ export function footprintRoofRise(poly, maxRise, pitch = 0.9) {
  * check is the whole reason this is safe to run over 1200 footprints.
  */
 export function addFootprintRoof(batch, poly, top, rise, pitch = 0.9) {
-  // Offset the simplified outline: the nodes an OSM footprint carries along a
-  // straight wall throw wild mitres, and dropping them also cuts the roof's
-  // triangle count.
+  /* Offset the simplified outline: the nodes an OSM footprint carries along a
+   * straight wall throw wild mitres.
+   *
+   * Coarsening further to rescue the plans that still fail was tried and
+   * removed. It lifts coverage by about 200 buildings and looks worse doing
+   * it: simplification pushes concave vertices outward, these houses are built
+   * wall to wall, and the result is roof slabs hanging over the neighbours.
+   * Constraining the coarsened ring to stay inside the true footprint rejects
+   * nearly all of it, so there is nothing to keep. */
   const ring = simplifyRing(poly[0]);
-  const outer = ringMetrics(ring).area;
+  const holes = poly.slice(1).map((hole) => simplifyRing(hole));
+  return addOffsetRoof(batch, ring, holes, ringMetrics(ring).area, top, rise, pitch);
+}
+
+function addOffsetRoof(batch, ring, holes, outerArea, top, rise, pitch) {
   for (const relax of [1, 0.6, 0.35]) {
     const height = rise * relax;
     const d = height / pitch;
     if (d < 0.4) break;
     const inset = insetRing(ring, d);
     if (!inset) break;
-    const innerArea = ringMetrics(inset).area;
-    // A fold-over flips the winding; an over-inset ring balloons or vanishes.
-    if (Math.sign(innerArea) !== Math.sign(outer)) continue;
-    const ratio = Math.abs(innerArea) / Math.abs(outer);
-    if (ratio > 0.92) continue;
-    // Every inset vertex has to still be inside the footprint, which is what
-    // catches a concave plan whose offset lines cross outside it.
-    let contained = true;
-    for (let i = 0; i < inset.length - 1 && contained; i++) {
-      contained = ringContains(ring, inset[i][0], inset[i][1]);
+    if (!offsetIsSane(inset, ring, outerArea)) continue;
+
+    /* A courtyard is a second set of eaves. The roof climbs from the street
+     * wall and from the yard wall to a ridge between them, so the yard has to
+     * be widened by the same run — offsetting only the outer ring roofed 74
+     * courtyards over, which is both wrong and the reason blocks read as
+     * plateaux. */
+    const crests = [];
+    let usable = true;
+    for (const hole of holes) {
+      const holeArea = ringMetrics(hole).area;
+      const widened = insetRing(hole, -d);
+      // The widened yard has to stay inside the inset outline, or the two
+      // slopes have crossed and the band is thinner than twice the run.
+      if (!widened || ringSelfIntersects(widened)
+        || Math.sign(ringMetrics(widened).area) !== Math.sign(holeArea)) {
+        usable = false; break;
+      }
+      for (let i = 0; i < widened.length - 1 && usable; i++) {
+        usable = ringContains(inset, widened[i][0], widened[i][1]);
+      }
+      if (!usable) break;
+      crests.push(widened);
     }
-    if (!contained) continue;
-    if (ringSelfIntersects(inset)) continue;
+    if (!usable) continue;
 
     const ridge = top + height;
     const slope = Math.hypot(height, d) / 4;
-    for (let i = 1; i < ring.length; i++) {
-      const [ax, az] = ring[i - 1]; const [bx, bz] = ring[i];
-      const run = Math.hypot(bx - ax, bz - az);
-      if (run < 1e-6) continue;
-      const c = inset[i % (inset.length - 1)];
-      const e = inset[i - 1];
-      batch.quad4(
-        [ax, top, az], [bx, top, bz], [c[0], ridge, c[1]], [e[0], ridge, e[1]],
-        [0, 0], [run / 4, 0], [run / 4, slope], [0, slope],
-      );
+    addRoofSkirt(batch, ring, inset, top, ridge, slope);
+    for (let i = 0; i < holes.length; i++) {
+      addRoofSkirt(batch, holes[i], crests[i], top, ridge, slope);
     }
-    // Cap whatever plateau is left, unless the inset has closed to a ridge.
-    if (ratio > 0.02) addFlatRoof(batch, [inset], ridge);
+    // Cap the ridge plateau, minus the widened yards, unless it has closed up.
+    const ratio = Math.abs(ringMetrics(inset).area) / Math.abs(outerArea);
+    if (ratio > 0.02) addFlatRoof(batch, [inset, ...crests], ridge);
     return true;
   }
   return false;
 }
 
 function addFlatRoof(batch, poly, top) {
-  const contour = poly[0].map(([x, z]) => new THREE.Vector2(x, z));
-  const holes = poly.slice(1).map((ring) => ring.map(([x, z]) => new THREE.Vector2(x, z)));
-  const points = contour.concat(...holes);
+  const { contour, holes, points } = shapeRings(poly);
   for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, holes)) {
     const va = points[a]; const vb = points[b]; const vc = points[c];
     batch.tri([vc.x, top, vc.y], [vb.x, top, vb.y], [va.x, top, va.y],
@@ -1044,6 +1196,9 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
   const excluded = siteExclusions(visualOverrides);
   const recipes = facadeRecipes(visualOverrides, map);
   const onHeroRoute = heroCorridor(map, visualOverrides);
+  // building:part rows point at the shell they belong to; index it so a part
+  // can take its parent's plaster rather than its own hash.
+  const parents = new Map(map.buildings.filter((b) => !b.part).map((b) => [b.id, b]));
   const detailMat = getMaterial('concrete', { color: '#c8bfae' });
   const entryFor = (sets, material, x, z) => {
     let byCell = sets.get(material);
@@ -1059,7 +1214,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
     if (excluded.has(building.id)) continue;
     const recipeEntry = recipes.get(building.id) || null;
     const recipe = recipeEntry?.recipe || null;
-    const style = facadeStyle(building, recipe);
+    const style = facadeStyle(building, recipe, parents);
     const litBuilding = hashId(building.id) % 5 === 0;
     for (const poly of decodedPolygons(building)) {
       if (!poly[0]?.length) continue;
@@ -1082,17 +1237,27 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
        * flat — see addFootprintRoof, which falls back to flat by itself if the
        * offset will not survive the plan. */
       if (!rectangular && roofShape !== 'flat') roofShape = 'footprint';
+      /* `roof:angle` is the surveyed pitch, so a roof tagged 60 degrees is
+       * steep and one tagged 38 is not. Untagged roofs keep the house default
+       * of about 42 degrees, which is the middle of the Brno range. */
+      const pitch = building.roof?.angle
+        ? Math.max(0.35, Math.min(2.2, Math.tan((building.roof.angle * Math.PI) / 180)))
+        : 0.9;
       const defaultRoof = Math.max(2.2, Math.min(7.5, Math.min(oriented?.depth || 8, 16) * 0.42));
-      const wantRoof = building.roof?.height || defaultRoof;
+      const wantRoof = building.roof?.height
+        || (building.roof?.angle && oriented ? Math.min(oriented.depth, 18) * 0.5 * pitch : 0)
+        || defaultRoof;
       const roofHeight = roofShape === 'flat' ? 0
         // A footprint roof takes what its own plan can carry, and the wall
         // height has to agree with it or the building ends up short.
-        : (roofShape === 'footprint' ? footprintRoofRise(poly, wantRoof) : wantRoof);
+        : (roofShape === 'footprint' ? footprintRoofRise(poly, wantRoof, pitch) : wantRoof);
       const totalHeight = Math.max(2.5, building.height - (building.minHeight || 0));
       const wallHeight = Math.max(2.5, totalHeight - roofHeight);
       const foundation = terrain.heightAt(cx, cz) + (building.minHeight || 0);
       const top = foundation + wallHeight;
-      const hasShopfront = Boolean(recipe || building.name)
+      // A street address is as good a sign of a shop at ground level as a
+      // name is: both mean somebody catalogued the building from the pavement.
+      const hasShopfront = Boolean(recipe || building.name || building.address)
         || /commercial|retail|office/.test(building.use || '');
       const { bay, floor } = facadeMetrics(building, wallHeight);
       const bands = detailedHere
@@ -1145,10 +1310,16 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
       const roofMat = roofMaterial(building);
       const roofBatch = entryFor(roofSets, roofMat, cx, cz);
       let pitchedHere = roofShape !== 'flat';
-      const emitRoof = (target) => {
+      const buildRoof = (target) => {
         if (roofShape === 'gabled') {
-          target.gable(oriented.cx, top, oriented.cz, oriented.width, oriented.depth,
-            roofHeight, oriented.rotation, 4);
+          /* `roof:direction` is the compass bearing the ridge runs along.
+           * Where it is surveyed it beats the footprint's longest edge, which
+           * is only a guess at which way the house was built to face. */
+          const ridged = building.roof?.direction != null
+            ? { ...oriented, rotation: Math.PI / 2 - (building.roof.direction * Math.PI) / 180 }
+            : oriented;
+          target.gable(ridged.cx, top, ridged.cz, ridged.width, ridged.depth,
+            roofHeight, ridged.rotation, 4);
         } else if (roofShape === 'skillion') {
           const hw = oriented.width / 2; const hd = oriented.depth / 2;
           const a = pointOnBox(oriented, -hw, -hd, top); const b = pointOnBox(oriented, hw, -hd, top);
@@ -1157,7 +1328,7 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
           target.quad4(a, b, c, d, [0, 0], [oriented.width / 4, 0],
             [oriented.width / 4, oriented.depth / 4], [0, oriented.depth / 4]);
         } else if (roofShape === 'footprint') {
-          if (!addFootprintRoof(target, poly, top, roofHeight)) {
+          if (!addFootprintRoof(target, poly, top, roofHeight, pitch)) {
             addFlatRoof(target, poly, top);
             pitchedHere = false;
           }
@@ -1172,8 +1343,17 @@ export function buildImportedBuildings(group, collision, map, terrain, chunks, v
         if (run && addFrontageRecipe(chunks, recipe, run, foundation, top)) frontages++;
       }
 
-      emitRoof(roofBatch);
-      if (central) emitRoof(centralShadowMass);
+      /* Build the roof once. A footprint roof costs several offset attempts
+       * and an O(n^2) simplicity check, and generating it a second time for
+       * the central cell's shadow proxy doubled the whole city's build. */
+      if (central) {
+        const shared = new Batch();
+        buildRoof(shared);
+        roofBatch.append(shared);
+        centralShadowMass.append(shared);
+      } else {
+        buildRoof(roofBatch);
+      }
       if (pitchedHere) pitchedRoofs++;
       if (detailedHere) detailed++;
       count++;
