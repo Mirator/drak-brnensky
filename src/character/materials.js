@@ -178,11 +178,17 @@ function resolve(key, overrides, factory) {
  * @param {object} [overrides] optional {body, glow, metal, cloth} materials
  */
 export function characterMaterials(rng, overrides) {
-  const { map, normal } = fabricMaps(rng);
+  /* Generated on first use, not up front: when every material comes from
+   * `overrides` or the registry no procedural material is built, so there is
+   * no reason to rasterise a 256² weave (and no reason for this function to
+   * need a 2D canvas at all). `fabricMaps` still memoises across calls, so the
+   * ordinary in-game path is unchanged. */
+  let _fabric = null;
+  const fabric = () => (_fabric || (_fabric = fabricMaps(rng)));
 
   const body = resolve('body', overrides, () => new THREE.MeshStandardMaterial({
-    map,
-    normalMap: normal,
+    map: fabric().map,
+    normalMap: fabric().normal,
     normalScale: new THREE.Vector2(0.65, 0.65),
     vertexColors: true,
     roughness: 0.74,
@@ -190,8 +196,8 @@ export function characterMaterials(rng, overrides) {
   }));
 
   const cloth = resolve('cloth', overrides, () => new THREE.MeshStandardMaterial({
-    map,
-    normalMap: normal,
+    map: fabric().map,
+    normalMap: fabric().normal,
     normalScale: new THREE.Vector2(0.5, 0.5),
     vertexColors: true,
     roughness: 0.86,
@@ -200,8 +206,8 @@ export function characterMaterials(rng, overrides) {
   }));
 
   const metal = resolve('metal', overrides, () => new THREE.MeshStandardMaterial({
-    map,
-    normalMap: normal,
+    map: fabric().map,
+    normalMap: fabric().normal,
     normalScale: new THREE.Vector2(0.3, 0.3),
     vertexColors: true,
     roughness: 0.38,

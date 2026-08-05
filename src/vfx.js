@@ -1336,7 +1336,14 @@ export class VFX {
         const d = distancePointSegment(pc, from, p.pos);
         if (d < p.radius + 0.55) {
           hit = { type: 'player', point: _hp.copy(pc) };
-          hitDist = 0;
+          // How far along this frame's movement the closest approach is — the
+          // same quantity raySegmentHit() reports as `dist`. Hard-coding zero
+          // made every wall lose the comparison below, so shots hit through
+          // cover; now a wall strictly closer along the path wins.
+          const along = (pc.x - from.x) * p.dir.x
+            + (pc.y - from.y) * p.dir.y
+            + (pc.z - from.z) * p.dir.z;
+          hitDist = Math.max(0, Math.min(step, along));
           pend.type = 'player';
           pend.nx = -p.dir.x; pend.ny = -p.dir.y; pend.nz = -p.dir.z;
           pend.surface = null;
@@ -1436,8 +1443,8 @@ export class VFX {
     this._muzzleGlow *= Math.exp(-dt * 14);
     this.muzzleLight.intensity = this._muzzleGlow * 34 + this.barrelHeat * 5;
 
-    const rig = ctx.player && ctx.player.fig;
-    const muzzle = rig && rig.muzzle;
+    const weapon = ctx.player && ctx.player.weapon;
+    const muzzle = weapon && weapon.muzzle;
     if (!muzzle) return;
     _v1.setFromMatrixPosition(muzzle.matrixWorld);
     this.muzzleLight.position.copy(_v1);
