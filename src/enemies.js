@@ -42,25 +42,32 @@ export const ENEMY_TYPES = {
   },
 };
 
-/** How long a body stays on the ground before the pool takes it back. */
-const CORPSE_LIFE = { whelp: 2.8, spitter: 3.0, golem: 3.6, boss: 6.5 };
+/** How long a body stays on the ground before the pool takes it back.
+ * Exported so tests can assert the corpse cutoff and the ragdoll's lifetime
+ * budget against the same numbers this file uses, instead of copies. */
+export const CORPSE_LIFE = { whelp: 2.8, spitter: 3.0, golem: 3.6, boss: 6.5 };
 /** Used wherever an archetype is missing from CORPSE_LIFE, so the ragdoll's
  * lifetime budget and the manager's cutoff can never drift apart. */
 const CORPSE_LIFE_DEFAULT = 2.8;
 /** How long the solver takes to fade a settled body out. */
-const CORPSE_FADE = 1.2;
+export const CORPSE_FADE = 1.2;
 /** Horizontal speed a corpse is allowed to keep at the moment of death (m/s). */
 const CORPSE_MAX_SPEED = 3;
 /** Extra personal space, so a pack spreads out instead of merging. */
 const SPACING = { whelp: 1.45, spitter: 1.5, golem: 1.15, boss: 1 };
+/** How hard a creature accelerates towards its wish velocity. */
+const MOVE_ACCEL = 12;
+/** Preserve the old 60 Hz acceleration blend while making it frame-rate
+ * invariant — the same treatment as ACCEL_BLEND_RATE in player.js. */
+const MOVE_ACCEL_RATE = -60 * Math.log(1 - MOVE_ACCEL / 60);
 /** Armour thresholds: each one throws a golem plate off and opens the core. */
-const GOLEM_PLATES = [0.8, 0.65, 0.5, 0.35, 0.2];
+export const GOLEM_PLATES = [0.8, 0.65, 0.5, 0.35, 0.2];
 /** Fraction of max health a single blow has to beat to rock something back.
  * A golem shrugs off single plasma bolts (34) and only staggers to melee or
  * a splash, which is what keeps it feeling heavy instead of stun-locked. */
-const STAGGER_FRAC = { whelp: 0.34, spitter: 0.3, golem: 0.18, boss: 0.09 };
+export const STAGGER_FRAC = { whelp: 0.34, spitter: 0.3, golem: 0.18, boss: 0.09 };
 /** No creature can be staggered again inside this window. */
-const STAGGER_LOCKOUT = 1.4;
+export const STAGGER_LOCKOUT = 1.4;
 /** Past this distance the small archetypes stop casting shadows. */
 const SHADOW_LOD_DIST = 55;
 /** States an action returns to when it finishes, instead of falling back to
@@ -415,6 +422,13 @@ export class EnemyManager {
           this._enterState(e, 'downed');
           e.downT = 1.1;
           e.act = null;
+          if (e.flying) {
+            // Knocked out of the air, same as _die(): drop the altitude hold so
+            // gravity takes over and it falls while it plays the downed pose,
+            // instead of hovering. It stands back up wherever it lands.
+            e.flying = false;
+            e.vel.y = Math.min(e.vel.y, 0);
+          }
         } else if (heavy) {
           // interrupt: a solid hit beats an attack that has not committed
           if (e.act && beat(e.act).phase === 'ant') e.act = null;
@@ -1211,9 +1225,8 @@ export class EnemyManager {
       const mLen = Math.hypot(moveX, moveZ);
       if (mLen > 0.001 && e.flinch <= 0 && e.stagger <= 0 && e.state !== 'downed') {
         moveX /= mLen; moveZ /= mLen;
-        const accel = 12;
-        e.vel.x += (moveX * speed - e.vel.x) * Math.min(1, accel * dt);
-        e.vel.z += (moveZ * speed - e.vel.z) * Math.min(1, accel * dt);
+        e.vel.x = damp(e.vel.x, moveX * speed, MOVE_ACCEL_RATE, dt);
+        e.vel.z = damp(e.vel.z, moveZ * speed, MOVE_ACCEL_RATE, dt);
       } else {
         const f = Math.exp(-6 * dt);
         e.vel.x *= f;

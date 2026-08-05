@@ -176,7 +176,12 @@ export class Hud {
     const drop = this._lastHpFrac - hpFrac;
     this._lastHpFrac = hpFrac;
     if (drop > 0.03) {
-      const angle = state.hurtDir ? Math.atan2(state.hurtDir.x, state.hurtDir.z) - state.camYaw : Math.random() * TAU;
+      // Camera forward is (-sin yaw, cos yaw), so the camera-relative bearing
+      // of a world direction d is atan2(-d.x, d.z) - camYaw — same convention
+      // as the minimap and the compass.
+      const angle = state.hurtDir
+        ? wrapAngle(Math.atan2(-state.hurtDir.x, state.hurtDir.z) - state.camYaw)
+        : Math.random() * TAU;
       this._dmgIndicators.push({ t0: now, angle, mag: Math.min(1, drop * 4) });
       if (drop > 0.08) this._desatUntil = now + 260 + Math.min(400, drop * 900);
     }
@@ -304,7 +309,9 @@ export class Hud {
       const a = d.angle;
       ctx.save();
       ctx.translate(cx, cy);
-      ctx.rotate(a);
+      // The arc spans canvas angle 0, i.e. the +x axis, so back it off a
+      // quarter turn: a bearing of 0 (straight ahead) then lights the top.
+      ctx.rotate(a - Math.PI / 2);
       ctx.beginPath();
       ctx.arc(0, 0, radius, -0.34, 0.34);
       ctx.strokeStyle = `rgba(255,70,50,${alpha})`;
@@ -376,7 +383,9 @@ export class Hud {
   _drawObjectiveMarker(ctx, w, h, state) {
     const dir = state.objectiveDir;
     if (!dir) return;
-    const bearing = wrapAngle(Math.atan2(dir.x, dir.z) - state.camYaw);
+    // Camera forward is (-sin yaw, cos yaw) — see camera.js. Matches the
+    // minimap's rotation and the compass.
+    const bearing = wrapAngle(Math.atan2(-dir.x, dir.z) - state.camYaw);
     const cx = w / 2, cy = h * 0.4;
     const onScreen = Math.abs(bearing) < 0.58;
     const edge = Math.min(w, h) * 0.42;

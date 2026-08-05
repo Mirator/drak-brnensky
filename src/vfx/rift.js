@@ -319,17 +319,19 @@ export function createRift(fx, scene, shared, pos, scale = 1) {
       rift.hurt = Math.min(1.4, rift.hurt + amount);
     },
 
-    dispose() {
+    dispose(opts = null) {
       // A rift that was shot dead gets a violent collapse; one torn down by a
       // level reset goes quietly. `_collapsing` is set by VFX.explosion() when
       // a blast lands on top of a live rift, which is exactly what main.js
-      // does one line before it disposes a killed rift.
+      // does one line before it disposes a killed rift — but it also survives a
+      // near miss the rift walked away from, so a teardown that is definitely
+      // not a kill says so with `{quiet: true}`.
       if (slot) {
         slot.light.intensity = 0;
         slot.busy = false;
       }
       fx.forgetRift(rift);
-      if (rift._collapsing > 0) {
+      if (rift._collapsing > 0 && !(opts && opts.quiet)) {
         fx.riftCollapse(pos, scale);
         // main.js disposes a killed rift in the same frame it explodes it, so
         // hand the mesh to VFX for a third of a second: uCollapse pinches the

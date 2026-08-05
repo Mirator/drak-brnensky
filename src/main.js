@@ -905,15 +905,22 @@ const menuEl = document.getElementById('menu');
 const pauseEl = document.getElementById('pause');
 const goEl = document.getElementById('gameover');
 const resumeHintEl = document.getElementById('resume-hint');
+/** Pending reveal of the game-over card, so a fast restart can cancel it. */
+let goRevealTimer = 0;
 
 function startGame() {
   gameplayRng.reset(GAMEPLAY_SEED);
   audio.init();
   audio.resume();
+  clearTimeout(goRevealTimer);
+  goRevealTimer = 0;
   // reset
   enemies.clear();
   for (const r of [...rifts]) {
-    r.visual.dispose();
+    /* Quiet teardown: a rift that merely stood near an explosion carries a
+     * `_collapsing` mark, and without this the reset would play its violent
+     * collapse. Only the kill path in damageRift() wants that. */
+    r.visual.dispose({ quiet: true });
     collision.remove(r.collider);
   }
   rifts.length = 0;
@@ -1041,7 +1048,9 @@ function onDeath() {
   }
   document.getElementById('go-title').textContent = 'PADL JSI';
   document.getElementById('go-stats').innerHTML = statsHtml();
-  setTimeout(() => goEl.classList.remove('hidden'), 1200);
+  /* Held so startGame() can cancel it: restarting inside the delay used to let
+   * the card fade in over a run already in progress. */
+  goRevealTimer = setTimeout(() => goEl.classList.remove('hidden'), 1200);
 }
 
 document.getElementById('btn-play').addEventListener('click', requestStart);
@@ -1172,10 +1181,23 @@ function advance(dt, shouldRender = true) {
 /** No-op hook set for ticking the player rig while dead. */
 const FROZEN_HOOKS = Object.freeze({});
 
+const _ragP = new THREE.Vector3();
+const _ragQ = new THREE.Quaternion();
+const _ragS = new THREE.Vector3();
+const _ragQi = new THREE.Quaternion();
+const _ragV = new THREE.Vector3();
+
 /**
  * Drive the character's bones from the ragdoll solver while a corpse is live.
  * The solver blends out of the animated pose over its blend window, so this
  * takes over without a snap. Hands control back when the handle dies.
+ *
+ * `bone.out` is a WORLD-space joint transform, while the rig's bones are a
+ * parented chain under `player.object` — which player.js keeps re-asserting at
+ * the death position every frame. So each transform has to be converted into
+ * its parent's frame on the way in, exactly as enemies.js `_driveRagdoll`
+ * does; writing world values into local slots displaced and scrambled every
+ * corpse that died away from the origin.
  */
 function applyPlayerRagdoll() {
   if (!playerRagdoll) return;
@@ -1186,11 +1208,21 @@ function applyPlayerRagdoll() {
   }
   const byName = player.rig && player.rig.byName;
   if (!byName) return;
+  // Parents first, which is the order the solver hands the bones back in, so
+  // each parent's world matrix is already rebuilt from its new local transform.
   for (const bone of playerRagdoll.bones) {
     const target = byName[bone.name];
-    if (!target) continue;
-    target.position.copy(bone.out.position);
-    target.quaternion.copy(bone.out.quaternion);
+    if (!target || !bone.out || !target.parent) continue;
+    const parent = target.parent;
+    parent.updateWorldMatrix(true, false);
+    parent.matrixWorld.decompose(_ragP, _ragQ, _ragS);
+    _ragQi.copy(_ragQ).invert();
+    const s = _ragS.x || 1;
+    _ragV.copy(bone.out.position).sub(_ragP).applyQuaternion(_ragQi).divideScalar(s);
+    target.position.copy(_ragV);
+    target.quaternion.copy(_ragQi).multiply(bone.out.quaternion);
+    target.updateMatrix();
+    target.matrixWorldNeedsUpdate = true;
   }
 }
 
